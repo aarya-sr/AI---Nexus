@@ -1,0 +1,885 @@
+<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<style>
+body { font-family: -apple-system, Helvetica, Arial, sans-serif; font-size: 11pt; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 40px; color: #1a1a1a; }
+h1 { font-size: 22pt; color: #1e3a5f; border-bottom: 2px solid #1e3a5f; padding-bottom: 8px; }
+h2 { font-size: 16pt; color: #1e3a5f; margin-top: 28px; }
+h3 { font-size: 13pt; color: #2c5282; margin-top: 20px; }
+h4 { font-size: 11pt; color: #2c5282; }
+strong { color: #1a1a1a; }
+table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 10pt; }
+th, td { border: 1px solid #d0d0d0; padding: 6px 10px; text-align: left; }
+th { background-color: #f0f4f8; font-weight: bold; }
+code { font-family: Menlo, monospace; font-size: 9pt; background: #f5f5f5; padding: 2px 4px; border-radius: 3px; }
+pre { background: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto; }
+pre code { background: none; padding: 0; font-size: 9pt; }
+@media print { body { margin: 0; padding: 20px; } }
+@page { size: A4; margin: 0.75in; }
+</style>
+</head><body><h1>Solution Approach: Frankenstein</h1>
+
+<p><strong>Meta-Agentic System for Autonomous Agent Construction</strong></p>
+
+<h2>1. Core Premise</h2>
+
+<p>Building an agent requires two kinds of knowledge: <strong>domain knowledge</strong> (what the agent should do) and <strong>engineering knowledge</strong> (how to build it). Today, one person needs both. Frankenstein splits that burden — the human provides domain expertise, Frankenstein provides the engineering.</p>
+
+<p>The human describes a problem in plain language. Frankenstein asks the right questions to extract what it needs, designs the architecture, stress-tests it, builds it, runs it, and fixes what breaks. The human validates twice — after requirements and after the architectural blueprint — then Frankenstein handles the rest autonomously.</p>
+
+<h2>2. Architecture</h2>
+
+<pre><code>  Human                          Frankenstein
+  ──────                         ────────────
+
+  Fuzzy prompt ──────────────►  [1. ELICITOR AGENT]
+                                 Structured domain extraction
+                                 5 categories of targeted questions
+                                        │
+                                        ▼
+                                 Requirements Document
+                                        │
+  Human validates ◄──────────── "Is this what you meant?"
+  ───────────────                       │
+                                        ▼
+                                [2. ARCHITECT AGENT]
+                                 Generates framework-agnostic spec
+                                 Selects tools from validated library
+                                 Designs agent roles, memory, flow
+                                        │
+                                        ▼
+                                [3. CRITIC AGENT]
+                                 Multi-vector attack on spec
+                                 Edge cases, dead-ends, tool mismatches
+                                 Architect revises until no criticals
+                                        │
+                                        ▼
+                                 Validated Spec + Attack Report
+                                        │
+  Human reviews ◄───────────── "Here's the blueprint.
+  ──────────────                 Here's what could go wrong.
+                                 Approve?"
+                                        │
+                                        ▼
+                                [4. BUILDER AGENT]
+                                 Compiles spec → CrewAI / LangGraph code
+                                 Template-driven, not free-form generation
+                                        │
+                                        ▼
+                                [5. TESTER AGENT]
+                                 Runs agents in Docker sandbox
+                                 Validates output against spec contracts
+                                 Traces failures → spec-level root cause
+                                        │
+                                        ▼
+                                 Working, tested agents
+                                 + Learnings → Chroma (for future builds)
+</code></pre>
+
+<h3>Why This Pipeline, Not One LLM Call</h3>
+
+<p>A single LLM prompt can generate agent code. But it cannot:</p>
+
+<ul>
+<li>Ask the human what's missing from their requirements</li>
+<li>Validate that selected tools actually support the required data formats</li>
+<li>Attack its own design for failure modes before building</li>
+<li>Run the generated code and trace failures back to architectural decisions</li>
+<li>Learn from previous builds to improve future ones</li>
+</ul>
+
+<p>Each stage exists because it solves a specific failure mode that one-shot generation cannot.</p>
+
+<h2>3. Pipeline Orchestration</h2>
+
+<p>Frankenstein itself is a LangGraph <code>StateGraph</code>. Each stage is a node. Edges define transitions. Conditional edges implement feedback loops.</p>
+
+<h3>3.1 Pipeline State Object</h3>
+
+<p>A single state object flows through the entire graph. Every node reads from it, does its work, writes back:</p>
+
+<div class="codehilite">
+<pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FrankensteinState</span><span class="p">(</span><span class="n">TypedDict</span><span class="p">):</span>
+    <span class="c1"># Stage 1: Elicitor</span>
+    <span class="n">raw_prompt</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">elicitor_questions</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]</span>         <span class="c1"># generated questions per category</span>
+    <span class="n">human_answers</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">dict</span><span class="p">]</span>              <span class="c1"># human responses</span>
+    <span class="n">requirements</span><span class="p">:</span> <span class="n">RequirementsDoc</span>          <span class="c1"># structured output</span>
+    <span class="n">requirements_approved</span><span class="p">:</span> <span class="nb">bool</span>            <span class="c1"># human checkpoint 1</span>
+
+    <span class="c1"># Stage 2-3: Architect + Critic</span>
+    <span class="n">tool_library_matches</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">ToolSchema</span><span class="p">]</span> <span class="c1"># RAG results from tool library</span>
+    <span class="n">past_spec_matches</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">SpecPattern</span><span class="p">]</span>   <span class="c1"># RAG results from past specs</span>
+    <span class="n">spec</span><span class="p">:</span> <span class="n">AgentSpec</span>                        <span class="c1"># generated specification</span>
+    <span class="n">critique</span><span class="p">:</span> <span class="n">CritiqueReport</span>              <span class="c1"># critic findings</span>
+    <span class="n">spec_iteration</span><span class="p">:</span> <span class="nb">int</span>                    <span class="c1"># current architect-critic loop count</span>
+    <span class="n">spec_approved</span><span class="p">:</span> <span class="nb">bool</span>                    <span class="c1"># human checkpoint 2</span>
+
+    <span class="c1"># Stage 4-5: Builder + Tester</span>
+    <span class="n">generated_code</span><span class="p">:</span> <span class="n">CodeBundle</span>             <span class="c1"># compiled code output</span>
+    <span class="n">test_cases</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">TestCase</span><span class="p">]</span>             <span class="c1"># auto-generated from spec contracts</span>
+    <span class="n">test_results</span><span class="p">:</span> <span class="n">TestReport</span>               <span class="c1"># execution results</span>
+    <span class="n">failure_traces</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">FailureTrace</span><span class="p">]</span>     <span class="c1"># mapped back to spec decisions</span>
+    <span class="n">build_iteration</span><span class="p">:</span> <span class="nb">int</span>                   <span class="c1"># current build-test loop count</span>
+
+    <span class="c1"># Stage 6: Learning</span>
+    <span class="n">build_outcome</span><span class="p">:</span> <span class="n">BuildOutcome</span>            <span class="c1"># final record for memory</span>
+</code></pre>
+</div>
+
+<h3>3.2 Graph Definition</h3>
+
+<div class="codehilite">
+<pre><span></span><code><span class="n">graph</span> <span class="o">=</span> <span class="n">StateGraph</span><span class="p">(</span><span class="n">FrankensteinState</span><span class="p">)</span>
+
+<span class="c1"># Nodes</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="s2">&quot;elicitor&quot;</span><span class="p">,</span> <span class="n">elicitor_agent</span><span class="p">)</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="s2">&quot;human_review_requirements&quot;</span><span class="p">,</span> <span class="n">human_checkpoint_1</span><span class="p">)</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="s2">&quot;architect&quot;</span><span class="p">,</span> <span class="n">architect_agent</span><span class="p">)</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="s2">&quot;critic&quot;</span><span class="p">,</span> <span class="n">critic_agent</span><span class="p">)</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="s2">&quot;human_review_spec&quot;</span><span class="p">,</span> <span class="n">human_checkpoint_2</span><span class="p">)</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="s2">&quot;builder&quot;</span><span class="p">,</span> <span class="n">builder_agent</span><span class="p">)</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="s2">&quot;tester&quot;</span><span class="p">,</span> <span class="n">tester_agent</span><span class="p">)</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_node</span><span class="p">(</span><span class="s2">&quot;learner&quot;</span><span class="p">,</span> <span class="n">learning_agent</span><span class="p">)</span>
+
+<span class="c1"># Edges</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_edge</span><span class="p">(</span><span class="s2">&quot;elicitor&quot;</span><span class="p">,</span> <span class="s2">&quot;human_review_requirements&quot;</span><span class="p">)</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_edge</span><span class="p">(</span><span class="s2">&quot;human_review_requirements&quot;</span><span class="p">,</span> <span class="s2">&quot;architect&quot;</span><span class="p">)</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_edge</span><span class="p">(</span><span class="s2">&quot;architect&quot;</span><span class="p">,</span> <span class="s2">&quot;critic&quot;</span><span class="p">)</span>
+
+<span class="c1"># Conditional: Critic → Architect (loop) or → Human Review</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_conditional_edges</span><span class="p">(</span><span class="s2">&quot;critic&quot;</span><span class="p">,</span> <span class="n">route_after_critique</span><span class="p">)</span>
+<span class="c1"># if criticals &gt; 0 AND spec_iteration &lt; MAX_SPEC_ITER → &quot;architect&quot;</span>
+<span class="c1"># else → &quot;human_review_spec&quot;</span>
+
+<span class="n">graph</span><span class="o">.</span><span class="n">add_edge</span><span class="p">(</span><span class="s2">&quot;human_review_spec&quot;</span><span class="p">,</span> <span class="s2">&quot;builder&quot;</span><span class="p">)</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_edge</span><span class="p">(</span><span class="s2">&quot;builder&quot;</span><span class="p">,</span> <span class="s2">&quot;tester&quot;</span><span class="p">)</span>
+
+<span class="c1"># Conditional: Tester → Builder (code fix) or → Architect (spec fix) or → Learner (done)</span>
+<span class="n">graph</span><span class="o">.</span><span class="n">add_conditional_edges</span><span class="p">(</span><span class="s2">&quot;tester&quot;</span><span class="p">,</span> <span class="n">route_after_test</span><span class="p">)</span>
+<span class="c1"># if tests_passed → &quot;learner&quot;</span>
+<span class="c1"># if failure is code-level AND build_iteration &lt; MAX_BUILD_ITER → &quot;builder&quot;</span>
+<span class="c1"># if failure is spec-level AND build_iteration &lt; MAX_BUILD_ITER → &quot;architect&quot;</span>
+<span class="c1"># if max iterations reached → &quot;learner&quot; (with partial success flag)</span>
+
+<span class="n">graph</span><span class="o">.</span><span class="n">add_edge</span><span class="p">(</span><span class="s2">&quot;learner&quot;</span><span class="p">,</span> <span class="n">END</span><span class="p">)</span>
+</code></pre>
+</div>
+
+<h3>3.3 Routing Logic</h3>
+
+<div class="codehilite">
+<pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">route_after_critique</span><span class="p">(</span><span class="n">state</span><span class="p">:</span> <span class="n">FrankensteinState</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="n">criticals</span> <span class="o">=</span> <span class="p">[</span><span class="n">f</span> <span class="k">for</span> <span class="n">f</span> <span class="ow">in</span> <span class="n">state</span><span class="p">[</span><span class="s2">&quot;critique&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">findings</span> <span class="k">if</span> <span class="n">f</span><span class="o">.</span><span class="n">severity</span> <span class="o">==</span> <span class="s2">&quot;critical&quot;</span><span class="p">]</span>
+    <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">criticals</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">state</span><span class="p">[</span><span class="s2">&quot;spec_iteration&quot;</span><span class="p">]</span> <span class="o">&lt;</span> <span class="n">MAX_SPEC_ITERATIONS</span><span class="p">:</span>
+        <span class="k">return</span> <span class="s2">&quot;architect&quot;</span>  <span class="c1"># loop back with critique attached</span>
+    <span class="k">return</span> <span class="s2">&quot;human_review_spec&quot;</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">route_after_test</span><span class="p">(</span><span class="n">state</span><span class="p">:</span> <span class="n">FrankensteinState</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">str</span><span class="p">:</span>
+    <span class="k">if</span> <span class="n">state</span><span class="p">[</span><span class="s2">&quot;test_results&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">all_passed</span><span class="p">:</span>
+        <span class="k">return</span> <span class="s2">&quot;learner&quot;</span>
+    <span class="k">if</span> <span class="n">state</span><span class="p">[</span><span class="s2">&quot;build_iteration&quot;</span><span class="p">]</span> <span class="o">&gt;=</span> <span class="n">MAX_BUILD_ITERATIONS</span><span class="p">:</span>
+        <span class="k">return</span> <span class="s2">&quot;learner&quot;</span>  <span class="c1"># partial success, store learnings anyway</span>
+    <span class="c1"># Analyze failure level</span>
+    <span class="k">for</span> <span class="n">trace</span> <span class="ow">in</span> <span class="n">state</span><span class="p">[</span><span class="s2">&quot;failure_traces&quot;</span><span class="p">]:</span>
+        <span class="k">if</span> <span class="n">trace</span><span class="o">.</span><span class="n">root_cause_level</span> <span class="o">==</span> <span class="s2">&quot;spec&quot;</span><span class="p">:</span>
+            <span class="k">return</span> <span class="s2">&quot;architect&quot;</span>  <span class="c1"># spec-level fix needed</span>
+    <span class="k">return</span> <span class="s2">&quot;builder&quot;</span>  <span class="c1"># code-level fix sufficient</span>
+</code></pre>
+</div>
+
+<h2>4. Internal Agent Engineering</h2>
+
+<h3>4.1 Elicitor Agent</h3>
+
+<p><strong>Implementation:</strong> LangGraph subgraph with a loop.</p>
+
+<pre><code>analyze_prompt → identify_gaps → generate_questions → receive_answers → update_requirements → check_completeness
+     ↑                                                                                              │
+     └──────────────────────── (if incomplete) ◄────────────────────────────────────────────────────┘
+</code></pre>
+
+<p><strong>How it decides what to ask:</strong></p>
+
+<p>The Elicitor runs the raw prompt through a gap analysis against a completeness checklist. Each of the five categories (Input/Output, Process, Data, Edge Cases, Quality Bar) has required fields. The Elicitor checks which fields the prompt already answers and generates questions only for gaps.</p>
+
+<div class="codehilite">
+<pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">RequirementsDoc</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+    <span class="n">domain</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">inputs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">DataSpec</span><span class="p">]</span>           <span class="c1"># name, format, description, example</span>
+    <span class="n">outputs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">DataSpec</span><span class="p">]</span>          <span class="c1"># name, format, description, example</span>
+    <span class="n">process_steps</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">ProcessStep</span><span class="p">]</span> <span class="c1"># step_number, description, rules, depends_on</span>
+    <span class="n">edge_cases</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">EdgeCase</span><span class="p">]</span>       <span class="c1"># description, expected_handling</span>
+    <span class="n">quality_criteria</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">QualityCriterion</span><span class="p">]</span>  <span class="c1"># criterion, validation_method</span>
+    <span class="n">constraints</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>           <span class="c1"># budget, time, technical constraints</span>
+</code></pre>
+</div>
+
+<p><strong>Completeness check:</strong> Each field has a <code>confidence_score</code> (0-1). The Elicitor loops until all required fields score above 0.7. It asks a maximum of 3 rounds of questions — if gaps remain after 3 rounds, it flags them as assumptions in the requirements doc and proceeds.</p>
+
+<p><strong>Output:</strong> Structured <code>RequirementsDoc</code> presented to human. Human approves or corrects.</p>
+
+<h3>4.2 Architect Agent</h3>
+
+<p><strong>Implementation:</strong> Sequential chain with RAG retrieval.</p>
+
+<p><strong>Step-by-step process:</strong></p>
+
+<pre><code>1. RAG Query: query Chroma for similar past specs
+        ↓
+2. Task Decomposition: break requirements into discrete tasks
+        ↓
+3. Tool Matching: for each task, query Tool Schema Library
+        ↓
+4. Agent Design: group tasks into agents by cohesion
+        ↓
+5. Flow Design: analyze dependencies → pick orchestration pattern
+        ↓
+6. Memory Design: determine what agents need to share
+        ↓
+7. Compile Spec: assemble all decisions into spec schema
+</code></pre>
+
+<p><strong>Task Decomposition</strong> — the Architect reads the <code>process_steps</code> from the requirements and identifies discrete computational tasks. Each task gets tagged with: what input it needs, what output it produces, what capability it requires (text extraction, calculation, reasoning, generation, API call).</p>
+
+<p><strong>Tool Matching</strong> — for each task's required capability, the Architect queries the Tool Schema Library in Chroma:</p>
+
+<div class="codehilite">
+<pre><span></span><code><span class="c1"># Query: &quot;extract text from PDF documents&quot;</span>
+<span class="c1"># Returns: [</span>
+<span class="c1">#   {id: &quot;pdf_parser_pymupdf&quot;, accepts: [&quot;pdf&quot;], outputs: [&quot;text&quot;], limitations: [&quot;no OCR&quot;]},</span>
+<span class="c1">#   {id: &quot;pdf_parser_unstructured&quot;, accepts: [&quot;pdf&quot;], outputs: [&quot;text&quot;, &quot;tables&quot;], limitations: [&quot;slower&quot;]},</span>
+<span class="c1">#   {id: &quot;ocr_tesseract&quot;, accepts: [&quot;image&quot;, &quot;scanned_pdf&quot;], outputs: [&quot;text&quot;], limitations: [&quot;accuracy varies&quot;]}</span>
+<span class="c1"># ]</span>
+</code></pre>
+</div>
+
+<p>The Architect selects based on format compatibility with upstream/downstream tasks. If Task A outputs JSON and Task B needs JSON, the tool must accept JSON. This is explicit matching, not guessing.</p>
+
+<p><strong>Agent Grouping</strong> — tasks are grouped into agents based on cohesion (related tasks) and coupling (data dependencies). A task that produces output consumed by another task in a tight loop should be in the same agent. Independent task chains become separate agents.</p>
+
+<p><strong>Flow Design</strong> — the Architect builds a dependency graph from task relationships:
+- No dependencies between agent groups → parallel execution
+- Linear chain of dependencies → sequential execution
+- Complex branching with conditions → graph-based (LangGraph)
+- Simple role delegation → hierarchical (CrewAI)</p>
+
+<p>This determines the framework target: CrewAI for role-based crews, LangGraph for state-dependent flows.</p>
+
+<p><strong>Spec Schema:</strong></p>
+
+<div class="codehilite">
+<pre><span></span><code><span class="nt">metadata</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string</span>
+<span class="w">  </span><span class="nt">domain</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string</span>
+<span class="w">  </span><span class="nt">framework_target</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">crewai | langgraph</span>
+<span class="w">  </span><span class="nt">created_from_pattern</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string | null</span><span class="w">  </span><span class="c1"># reference to past spec used as base</span>
+
+<span class="nt">agents</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string</span>
+<span class="w">    </span><span class="nt">role</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string</span>
+<span class="w">    </span><span class="nt">goal</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string</span>
+<span class="w">    </span><span class="nt">backstory</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string</span>
+<span class="w">    </span><span class="nt">tools</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">tool_id</span><span class="p p-Indicator">]</span>
+<span class="w">    </span><span class="nt">reasoning_strategy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">react | cot | plan_execute</span>
+<span class="w">    </span><span class="nt">receives_from</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">agent_id</span><span class="p p-Indicator">]</span>
+<span class="w">    </span><span class="nt">sends_to</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">agent_id</span><span class="p p-Indicator">]</span>
+
+<span class="nt">tools</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string</span>
+<span class="w">    </span><span class="nt">library_ref</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string</span><span class="w">          </span><span class="c1"># reference to Tool Schema Library entry</span>
+<span class="w">    </span><span class="nt">config</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">object</span><span class="w">               </span><span class="c1"># tool-specific configuration</span>
+<span class="w">    </span><span class="nt">accepts</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">format</span><span class="p p-Indicator">]</span>
+<span class="w">    </span><span class="nt">outputs</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">format</span><span class="p p-Indicator">]</span>
+
+<span class="nt">memory</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">strategy</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">short_term | long_term | shared | none</span>
+<span class="w">  </span><span class="nt">shared_keys</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">string</span><span class="p p-Indicator">]</span><span class="w">         </span><span class="c1"># what data is shared between agents</span>
+<span class="w">  </span><span class="nt">persistence</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">session | permanent</span>
+
+<span class="nt">execution_flow</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">pattern</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">sequential | parallel | hierarchical | graph</span>
+<span class="w">  </span><span class="nt">graph</span><span class="p">:</span><span class="w">                         </span><span class="c1"># only if pattern == graph</span>
+<span class="w">    </span><span class="nt">nodes</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">agent_id</span><span class="p p-Indicator">]</span>
+<span class="w">    </span><span class="nt">edges</span><span class="p">:</span>
+<span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">from</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">agent_id</span>
+<span class="w">        </span><span class="nt">to</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">agent_id</span>
+<span class="w">        </span><span class="nt">condition</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string | null</span>
+<span class="w">        </span><span class="nt">data_contract</span><span class="p">:</span>
+<span class="w">          </span><span class="nt">fields</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">field_name</span><span class="p p-Indicator">]</span>
+<span class="w">          </span><span class="nt">format</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string</span>
+
+<span class="nt">error_handling</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">agent_id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string</span>
+<span class="w">    </span><span class="nt">on_failure</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">retry | fallback | skip | abort</span>
+<span class="w">    </span><span class="nt">max_retries</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">int</span>
+<span class="w">    </span><span class="nt">fallback_agent</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string | null</span>
+
+<span class="nt">io_contracts</span><span class="p">:</span>
+<span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">agent_id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">string</span>
+<span class="w">    </span><span class="nt">input_schema</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">fields</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[{</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="nv">string</span><span class="p p-Indicator">,</span><span class="nt"> type</span><span class="p">:</span><span class="w"> </span><span class="nv">string</span><span class="p p-Indicator">,</span><span class="nt"> required</span><span class="p">:</span><span class="w"> </span><span class="nv">bool</span><span class="p p-Indicator">}]</span>
+<span class="w">    </span><span class="nt">output_schema</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">fields</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[{</span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="nv">string</span><span class="p p-Indicator">,</span><span class="nt"> type</span><span class="p">:</span><span class="w"> </span><span class="nv">string</span><span class="p p-Indicator">,</span><span class="nt"> required</span><span class="p">:</span><span class="w"> </span><span class="nv">bool</span><span class="p p-Indicator">}]</span>
+</code></pre>
+</div>
+
+<h3>4.3 Critic Agent</h3>
+
+<p><strong>Implementation:</strong> Parallel chain — runs multiple attack vectors simultaneously, aggregates findings.</p>
+
+<p><strong>Attack vectors (each is a separate chain):</strong></p>
+
+<table>
+<thead>
+<tr>
+  <th>Vector</th>
+  <th>What It Checks</th>
+  <th>How</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><strong>Format Compatibility</strong></td>
+  <td>Does Agent A's output format match Agent B's input format?</td>
+  <td>Walks every edge in the execution graph, compares <code>output_schema</code> → <code>input_schema</code></td>
+</tr>
+<tr>
+  <td><strong>Tool Validation</strong></td>
+  <td>Does each tool actually support the data format assigned to it?</td>
+  <td>Cross-references tool's <code>accepts</code> field against the data it will receive</td>
+</tr>
+<tr>
+  <td><strong>Dead-End Analysis</strong></td>
+  <td>Can any agent fail without being caught?</td>
+  <td>Checks every agent's <code>on_failure</code> config. Flags any agent with no error handling</td>
+</tr>
+<tr>
+  <td><strong>Dependency Completeness</strong></td>
+  <td>Does every agent receive all fields it needs?</td>
+  <td>Compares each agent's <code>input_schema.required</code> fields against upstream <code>output_schema</code></td>
+</tr>
+<tr>
+  <td><strong>Resource Conflicts</strong></td>
+  <td>Do parallel agents write to the same shared memory keys?</td>
+  <td>Checks <code>memory.shared_keys</code> against parallel execution paths</td>
+</tr>
+<tr>
+  <td><strong>Circular Dependencies</strong></td>
+  <td>Does the execution graph contain cycles?</td>
+  <td>Runs topological sort on the graph. If it fails, there's a cycle</td>
+</tr>
+</tbody>
+</table>
+
+<p><strong>Output structure:</strong></p>
+
+<div class="codehilite">
+<pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">CritiqueReport</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+    <span class="n">findings</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Finding</span><span class="p">]</span>
+    <span class="n">summary</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">iteration</span><span class="p">:</span> <span class="nb">int</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">Finding</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+    <span class="n">vector</span><span class="p">:</span> <span class="nb">str</span>                <span class="c1"># which attack vector found this</span>
+    <span class="n">severity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;critical&quot;</span><span class="p">,</span> <span class="s2">&quot;warning&quot;</span><span class="p">,</span> <span class="s2">&quot;suggestion&quot;</span><span class="p">]</span>
+    <span class="n">description</span><span class="p">:</span> <span class="nb">str</span>           <span class="c1"># what&#39;s wrong</span>
+    <span class="n">location</span><span class="p">:</span> <span class="nb">str</span>              <span class="c1"># which agent/edge/tool is affected</span>
+    <span class="n">evidence</span><span class="p">:</span> <span class="nb">str</span>              <span class="c1"># specific spec values that conflict</span>
+    <span class="n">suggested_fix</span><span class="p">:</span> <span class="nb">str</span>         <span class="c1"># what the Architect should change</span>
+</code></pre>
+</div>
+
+<p><strong>Loop mechanics:</strong> The Critic's findings are attached to state. When routing back to Architect, the Architect receives <code>state["critique"].findings</code> and must address every critical finding. The Architect's revised spec is passed to the Critic again. The Critic only checks against previously found issues plus any new issues introduced by the revision.</p>
+
+<h3>4.4 Builder Agent</h3>
+
+<p><strong>Implementation:</strong> Template-based code generation with framework-specific compilers.</p>
+
+<p><strong>Compilation process:</strong></p>
+
+<pre><code>Read spec → Select framework compiler → For each agent: generate definition
+    → For each tool: generate binding → Generate orchestration code
+    → Generate entry point → Assemble project → Validate
+</code></pre>
+
+<p><strong>Project output structure:</strong></p>
+
+<pre><code>generated_agent/
+├── main.py                # entry point
+├── agents.py              # agent definitions (roles, goals, backstories)
+├── tools.py               # tool implementations and bindings
+├── orchestration.py       # CrewAI crew or LangGraph graph definition
+├── config.yaml            # agent and tool configuration
+├── requirements.txt       # Python dependencies
+└── tests/
+    └── test_pipeline.py   # auto-generated test cases from spec contracts
+</code></pre>
+
+<p><strong>CrewAI compiler</strong> — maps spec agents to <code>Agent()</code> instances, tools to <code>Tool()</code> instances, execution flow to <code>Crew()</code> with <code>process=Process.sequential|Process.hierarchical</code>.</p>
+
+<p><strong>LangGraph compiler</strong> — maps spec agents to node functions, execution flow edges to <code>add_edge()</code> / <code>add_conditional_edges()</code>, state to <code>TypedDict</code>, memory to <code>MemorySaver</code> or custom state fields.</p>
+
+<p><strong>Validation before execution:</strong>
+1. Syntax check — <code>py_compile</code> on all generated .py files
+2. Import check — verify all imports resolve against requirements.txt
+3. Schema check — verify generated code matches spec contracts (function signatures match I/O contracts)</p>
+
+<h3>4.5 Tester Agent</h3>
+
+<p><strong>Implementation:</strong> Docker execution engine + output validator.</p>
+
+<p><strong>Test case generation:</strong></p>
+
+<p>The Tester reads the spec's <code>io_contracts</code> and generates test cases:</p>
+
+<div class="codehilite">
+<pre><span></span><code><span class="c1"># From spec: input is bank_statement.pdf, output is risk_score.json</span>
+<span class="c1"># Generated test:</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">TestCase</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>                    <span class="c1"># &quot;test_bank_statement_processing&quot;</span>
+    <span class="n">input_data</span><span class="p">:</span> <span class="nb">dict</span>             <span class="c1"># sample input (synthetic or from domain templates)</span>
+    <span class="n">expected_output_schema</span><span class="p">:</span> <span class="nb">dict</span> <span class="c1"># JSON schema the output must match</span>
+    <span class="n">quality_checks</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>    <span class="c1"># [&quot;output.risk_score is between 0 and 1&quot;,</span>
+                                 <span class="c1">#  &quot;output.reasoning is non-empty string&quot;]</span>
+</code></pre>
+</div>
+
+<p>For hackathon scope: test inputs are synthetic (generated by LLM based on domain knowledge from requirements doc). For production: would use real sample data.</p>
+
+<p><strong>Execution flow:</strong></p>
+
+<pre><code>1. Build Docker image from generated_agent/ + requirements.txt
+2. Run container with test input mounted
+3. Capture stdout, stderr, exit code
+4. Parse output against expected_output_schema
+5. Run quality_checks against parsed output
+6. If failure → generate FailureTrace
+</code></pre>
+
+<p><strong>Failure tracing:</strong></p>
+
+<div class="codehilite">
+<pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">FailureTrace</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+    <span class="n">test_name</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">error_type</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;crash&quot;</span><span class="p">,</span> <span class="s2">&quot;wrong_output&quot;</span><span class="p">,</span> <span class="s2">&quot;missing_field&quot;</span><span class="p">,</span> <span class="s2">&quot;quality_fail&quot;</span><span class="p">]</span>
+    <span class="n">raw_error</span><span class="p">:</span> <span class="nb">str</span>                <span class="c1"># actual error message or output</span>
+    <span class="n">failing_agent</span><span class="p">:</span> <span class="nb">str</span>            <span class="c1"># which agent in the generated pipeline failed</span>
+    <span class="n">root_cause_level</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">&quot;code&quot;</span><span class="p">,</span> <span class="s2">&quot;spec&quot;</span><span class="p">]</span>
+    <span class="n">root_cause_analysis</span><span class="p">:</span> <span class="nb">str</span>      <span class="c1"># &quot;Agent 2 received XML but tool expects JSON&quot;</span>
+    <span class="n">spec_decision_responsible</span><span class="p">:</span> <span class="nb">str</span> <span class="c1"># &quot;spec.tools[1].library_ref = xml_parser&quot;</span>
+    <span class="n">suggested_fix</span><span class="p">:</span> <span class="nb">str</span>            <span class="c1"># &quot;Change to json_parser or add format converter&quot;</span>
+</code></pre>
+</div>
+
+<p>The <code>root_cause_level</code> determines routing: <code>"code"</code> loops back to Builder (fix the generated code), <code>"spec"</code> loops back to Architect (fix the design decision).</p>
+
+<h3>4.6 Learner Agent</h3>
+
+<p><strong>Implementation:</strong> Post-build processor that writes structured records to Chroma.</p>
+
+<p><strong>What gets stored after every build:</strong></p>
+
+<div class="codehilite">
+<pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">BuildOutcome</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+    <span class="n">requirements_hash</span><span class="p">:</span> <span class="nb">str</span>        <span class="c1"># for similarity matching</span>
+    <span class="n">requirements_summary</span><span class="p">:</span> <span class="nb">str</span>     <span class="c1"># embedded for RAG retrieval</span>
+    <span class="n">domain</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">spec_snapshot</span><span class="p">:</span> <span class="n">AgentSpec</span>      <span class="c1"># the final validated spec</span>
+    <span class="n">framework_used</span><span class="p">:</span> <span class="nb">str</span>           <span class="c1"># crewai or langgraph</span>
+    <span class="n">tools_used</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>         <span class="c1"># tool IDs from library</span>
+    <span class="n">test_results</span><span class="p">:</span> <span class="n">TestReport</span>
+    <span class="n">iterations_needed</span><span class="p">:</span> <span class="nb">int</span>        <span class="c1"># how many architect-critic + build-test loops</span>
+    <span class="n">failure_patterns</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>   <span class="c1"># what went wrong and was fixed</span>
+    <span class="n">anti_patterns</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>      <span class="c1"># patterns that caused failures</span>
+    <span class="n">success_patterns</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>   <span class="c1"># patterns that worked well</span>
+</code></pre>
+</div>
+
+<h2>5. Chroma Memory Architecture</h2>
+
+<h3>5.1 Collections</h3>
+
+<table>
+<thead>
+<tr>
+  <th>Collection</th>
+  <th>Content</th>
+  <th>Embedding Source</th>
+  <th>Query Pattern</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>tool_schemas</code></td>
+  <td>Validated tool definitions</td>
+  <td>Tool description + capabilities text</td>
+  <td>Architect queries with task capability requirements</td>
+</tr>
+<tr>
+  <td><code>spec_patterns</code></td>
+  <td>Past validated specs + outcomes</td>
+  <td>Requirements summary text</td>
+  <td>Architect queries with current requirements before generating</td>
+</tr>
+<tr>
+  <td><code>anti_patterns</code></td>
+  <td>Failed patterns with explanations</td>
+  <td>Failure description text</td>
+  <td>Architect queries to check "has this pattern failed before?"</td>
+</tr>
+<tr>
+  <td><code>domain_insights</code></td>
+  <td>Domain-specific learnings</td>
+  <td>Domain + task type text</td>
+  <td>Elicitor queries to load domain-specific question templates</td>
+</tr>
+</tbody>
+</table>
+
+<h3>5.2 Tool Schema Library Structure</h3>
+
+<p>Each tool in the library is a structured record:</p>
+
+<div class="codehilite">
+<pre><span></span><code><span class="k">class</span><span class="w"> </span><span class="nc">ToolSchema</span><span class="p">(</span><span class="n">BaseModel</span><span class="p">):</span>
+    <span class="nb">id</span><span class="p">:</span> <span class="nb">str</span>                       <span class="c1"># &quot;pdf_parser_pymupdf&quot;</span>
+    <span class="n">name</span><span class="p">:</span> <span class="nb">str</span>                     <span class="c1"># &quot;PyMuPDF PDF Parser&quot;</span>
+    <span class="n">description</span><span class="p">:</span> <span class="nb">str</span>              <span class="c1"># &quot;Extracts text and tables from PDF files&quot;</span>
+    <span class="n">category</span><span class="p">:</span> <span class="nb">str</span>                 <span class="c1"># &quot;document_extraction&quot;</span>
+    <span class="n">accepts</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>            <span class="c1"># [&quot;pdf&quot;]</span>
+    <span class="n">outputs</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>            <span class="c1"># [&quot;text&quot;, &quot;tables&quot;]</span>
+    <span class="n">output_format</span><span class="p">:</span> <span class="nb">str</span>            <span class="c1"># &quot;json&quot;</span>
+    <span class="n">limitations</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>        <span class="c1"># [&quot;no OCR for scanned documents&quot;]</span>
+    <span class="n">dependencies</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>       <span class="c1"># [&quot;pymupdf&gt;=1.23.0&quot;]</span>
+    <span class="n">code_template</span><span class="p">:</span> <span class="nb">str</span>            <span class="c1"># actual Python code for this tool</span>
+    <span class="n">compatible_with</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>    <span class="c1"># tool IDs that work well downstream</span>
+    <span class="n">incompatible_with</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span>  <span class="c1"># tool IDs known to conflict</span>
+</code></pre>
+</div>
+
+<p>The <code>compatible_with</code> and <code>incompatible_with</code> fields are populated by the Learner from past build outcomes. Initially seeded manually, then grows through usage.</p>
+
+<h3>5.3 RAG Query Flow</h3>
+
+<pre><code>Architect receives requirements
+    ↓
+Query 1: spec_patterns collection
+    "Find specs similar to: [requirements_summary]"
+    → Returns top-3 past specs with their outcomes
+    → Architect uses successful ones as structural reference
+    ↓
+Query 2: tool_schemas collection
+    For each task: "Find tools that can: [task_capability]"
+    → Returns ranked tool options with compatibility info
+    → Architect selects based on format chain compatibility
+    ↓
+Query 3: anti_patterns collection
+    "Has any pattern similar to [proposed_pattern] failed before?"
+    → Returns matching anti-patterns
+    → Architect avoids known failure modes
+</code></pre>
+
+<h2>6. Technology Stack</h2>
+
+<h3>6.1 LLM Strategy — Model Per Agent via OpenRouter</h3>
+
+<p>All LLM calls route through OpenRouter. Each agent uses a different model optimized for its task. Architect and Critic deliberately use different model families to avoid shared blind spots in adversarial review.</p>
+
+<table>
+<thead>
+<tr>
+  <th>Agent</th>
+  <th>Model</th>
+  <th>Reasoning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><strong>Elicitor</strong></td>
+  <td><code>gpt-4o-mini</code></td>
+  <td>Fast, good conversational skills for interactive Q&amp;A with human</td>
+</tr>
+<tr>
+  <td><strong>Architect</strong></td>
+  <td><code>claude-sonnet-4-6</code></td>
+  <td>Strongest structured reasoning for spec generation and architectural decisions</td>
+</tr>
+<tr>
+  <td><strong>Critic</strong></td>
+  <td><code>gpt-4o</code></td>
+  <td>Different model family from Architect — cross-model adversarial review catches flaws same-model review misses</td>
+</tr>
+<tr>
+  <td><strong>Builder</strong></td>
+  <td><code>claude-sonnet-4-6</code></td>
+  <td>Strong code generation, deep knowledge of CrewAI/LangGraph patterns</td>
+</tr>
+<tr>
+  <td><strong>Tester</strong></td>
+  <td><code>gpt-4o-mini</code></td>
+  <td>Error analysis and trace mapping — doesn't need top-tier model</td>
+</tr>
+<tr>
+  <td><strong>Learner</strong></td>
+  <td><code>gpt-4o-mini</code></td>
+  <td>Lightweight — just structuring data for Chroma storage</td>
+</tr>
+</tbody>
+</table>
+
+<h3>6.2 Full Stack</h3>
+
+<table>
+<thead>
+<tr>
+  <th>Layer</th>
+  <th>Technology</th>
+  <th>Role</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><strong>LLM Gateway</strong></td>
+  <td>OpenRouter</td>
+  <td>Single API for all model access, model-per-agent routing</td>
+</tr>
+<tr>
+  <td><strong>Pipeline Orchestration</strong></td>
+  <td>LangGraph</td>
+  <td>Frankenstein's own internal pipeline — StateGraph with conditional edges for feedback loops</td>
+</tr>
+<tr>
+  <td><strong>Generated Agent Framework</strong></td>
+  <td>CrewAI or LangGraph</td>
+  <td>Architect decides per case — CrewAI for role-based crews, LangGraph for state-dependent flows</td>
+</tr>
+<tr>
+  <td><strong>Vector Database</strong></td>
+  <td>Chroma</td>
+  <td>Tool schemas, past specs, learnings, anti-patterns for RAG retrieval</td>
+</tr>
+<tr>
+  <td><strong>Code Execution</strong></td>
+  <td>Docker (pre-built base image)</td>
+  <td>Base image with Python + CrewAI + LangGraph + common packages pre-installed. Generated code mounted at runtime. Fast startup (~2-3s)</td>
+</tr>
+<tr>
+  <td><strong>Backend</strong></td>
+  <td>FastAPI</td>
+  <td>API server — handles chat sessions, pipeline orchestration, Docker management, Chroma queries</td>
+</tr>
+<tr>
+  <td><strong>Frontend</strong></td>
+  <td>React</td>
+  <td>Chat interface for prompt input, Elicitor Q&amp;A, spec review/approval, agent delivery and download</td>
+</tr>
+</tbody>
+</table>
+
+<h3>6.3 Docker Execution Environment</h3>
+
+<p>Pre-built base image (<code>frankenstein-runner</code>):</p>
+
+<div class="codehilite">
+<pre><span></span><code><span class="k">FROM</span><span class="w"> </span><span class="s">python:3.11-slim</span>
+<span class="k">RUN</span><span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>crewai<span class="w"> </span>langgraph<span class="w"> </span>langchain-core<span class="w"> </span>langchain-openai<span class="w"> </span><span class="se">\</span>
+<span class="w">    </span>chromadb<span class="w"> </span>pymupdf<span class="w"> </span>pandas<span class="w"> </span>requests<span class="w"> </span>beautifulsoup4<span class="w"> </span>pydantic
+<span class="k">WORKDIR</span><span class="w"> </span><span class="s">/agent</span>
+<span class="c"># Generated code mounted here at runtime</span>
+<span class="k">CMD</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;python&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;main.py&quot;</span><span class="p">]</span>
+</code></pre>
+</div>
+
+<p><strong>Runtime flow:</strong>
+1. Builder outputs <code>generated_agent/</code> directory
+2. FastAPI mounts directory into running container: <code>docker run -v ./generated_agent:/agent frankenstein-runner</code>
+3. Tester captures stdout/stderr via Docker SDK
+4. Container killed after timeout (60s default)
+5. Output parsed and validated</p>
+
+<h2>7. Datasets</h2>
+
+<table>
+<thead>
+<tr>
+  <th>Dataset</th>
+  <th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><strong>Tool Schema Library</strong></td>
+  <td>Curated library of validated tool definitions with input/output format specs, capabilities, and known limitations. Pre-seeded with tools needed for PS-08 and PS-06 demos</td>
+</tr>
+<tr>
+  <td><strong>Spec Pattern Memory</strong></td>
+  <td>Growing collection of validated specs, outcomes, and anti-patterns in Chroma, queried via RAG</td>
+</tr>
+<tr>
+  <td><strong>Domain Question Templates</strong></td>
+  <td>Per-domain structured question sets for the Elicitor's extraction protocol</td>
+</tr>
+<tr>
+  <td><strong>Code Templates</strong></td>
+  <td>Framework-specific (CrewAI / LangGraph) code patterns mapped to spec elements for deterministic compilation</td>
+</tr>
+</tbody>
+</table>
+
+<h3>7.1 Pre-Seeded Tool Library (MVP)</h3>
+
+<p>Tools needed for demo problem statements:</p>
+
+<p><strong>PS-08 — Loan Underwriting Co-Pilot:</strong></p>
+
+<table>
+<thead>
+<tr>
+  <th>Tool ID</th>
+  <th>Category</th>
+  <th>Accepts</th>
+  <th>Outputs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>pdf_parser_pymupdf</code></td>
+  <td>document_extraction</td>
+  <td>pdf</td>
+  <td>text, tables</td>
+</tr>
+<tr>
+  <td><code>ocr_tesseract</code></td>
+  <td>document_extraction</td>
+  <td>image, scanned_pdf</td>
+  <td>text</td>
+</tr>
+<tr>
+  <td><code>financial_calculator</code></td>
+  <td>computation</td>
+  <td>json (numbers)</td>
+  <td>json (ratios, scores)</td>
+</tr>
+<tr>
+  <td><code>rule_engine</code></td>
+  <td>reasoning</td>
+  <td>json (data + rules)</td>
+  <td>json (pass/fail + reasoning)</td>
+</tr>
+<tr>
+  <td><code>report_generator</code></td>
+  <td>generation</td>
+  <td>json (analysis)</td>
+  <td>markdown, pdf</td>
+</tr>
+<tr>
+  <td><code>web_search</code></td>
+  <td>research</td>
+  <td>query string</td>
+  <td>json (results)</td>
+</tr>
+</tbody>
+</table>
+
+<p><strong>PS-06 — Supplier Reliability Scoring Agent:</strong></p>
+
+<table>
+<thead>
+<tr>
+  <th>Tool ID</th>
+  <th>Category</th>
+  <th>Accepts</th>
+  <th>Outputs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>csv_parser</code></td>
+  <td>data_ingestion</td>
+  <td>csv</td>
+  <td>json (structured data)</td>
+</tr>
+<tr>
+  <td><code>statistical_analyzer</code></td>
+  <td>computation</td>
+  <td>json (numerical data)</td>
+  <td>json (statistics, trends)</td>
+</tr>
+<tr>
+  <td><code>scoring_engine</code></td>
+  <td>reasoning</td>
+  <td>json (metrics + weights)</td>
+  <td>json (scores + reasoning)</td>
+</tr>
+<tr>
+  <td><code>data_visualizer</code></td>
+  <td>generation</td>
+  <td>json (data)</td>
+  <td>image (charts), html</td>
+</tr>
+<tr>
+  <td><code>report_generator</code></td>
+  <td>generation</td>
+  <td>json (analysis)</td>
+  <td>markdown, pdf</td>
+</tr>
+</tbody>
+</table>
+
+<p><strong>General-Purpose Tools (available to all builds):</strong></p>
+
+<table>
+<thead>
+<tr>
+  <th>Tool ID</th>
+  <th>Category</th>
+  <th>Accepts</th>
+  <th>Outputs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>web_search</code></td>
+  <td>research</td>
+  <td>query string</td>
+  <td>json (results)</td>
+</tr>
+<tr>
+  <td><code>file_reader</code></td>
+  <td>data_ingestion</td>
+  <td>txt, json, yaml</td>
+  <td>text, json</td>
+</tr>
+<tr>
+  <td><code>json_transformer</code></td>
+  <td>data_processing</td>
+  <td>json</td>
+  <td>json (restructured)</td>
+</tr>
+<tr>
+  <td><code>llm_reasoner</code></td>
+  <td>reasoning</td>
+  <td>text (prompt)</td>
+  <td>text (response)</td>
+</tr>
+<tr>
+  <td><code>code_executor</code></td>
+  <td>computation</td>
+  <td>python code string</td>
+  <td>execution output</td>
+</tr>
+</tbody>
+</table>
+
+<h2>8. What Frankenstein Does Not Do</h2>
+
+<p>Clarity on scope:</p>
+
+<ul>
+<li><strong>Does not understand domains autonomously</strong> — relies on the human for domain knowledge. Frankenstein is the engineering team, not the product manager.</li>
+<li><strong>Does not replace prompt engineering entirely</strong> — the Elicitor improves input quality, but garbage domain knowledge in still produces garbage agents out.</li>
+<li><strong>Does not guarantee perfect agents on first pass</strong> — the test-and-fix loop exists because first builds will have issues. The system's strength is autonomous correction, not perfection.</li>
+<li><strong>Does not work without a Tool Schema Library</strong> — the Architect can only select tools it knows about. An empty library means no useful output. The library must be pre-built and maintained.</li>
+</ul>
+</body></html>
