@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_database": "frankenstein",
+  "project_id": "86aecd0b-16e4-4a8b-a27b-7ab0a5ea727c"
+}
