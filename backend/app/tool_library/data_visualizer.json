@@ -1,0 +1,14 @@
+{
+  "id": "data_visualizer",
+  "name": "Data Visualizer",
+  "description": "Creates charts and visualizations from JSON data. Produces images (PNG) or HTML with embedded charts.",
+  "category": "generation",
+  "accepts": ["json"],
+  "outputs": ["image", "html"],
+  "output_format": "html",
+  "limitations": ["requires matplotlib", "limited to standard chart types (bar, line, scatter, pie)"],
+  "dependencies": ["matplotlib>=3.8.0"],
+  "code_template": "import matplotlib\nmatplotlib.use('Agg')\nimport matplotlib.pyplot as plt\nimport io\nimport base64\n\ndef data_visualizer(data: dict, chart_type: str = \"bar\", title: str = \"Chart\", x_field: str = \"\", y_field: str = \"\") -> dict:\n    records = data.get(\"data\", [])\n    if not records:\n        return {\"error\": \"No data to visualize\"}\n    x_values = [r.get(x_field, i) for i, r in enumerate(records)]\n    y_values = [r.get(y_field, 0) for r in records]\n    fig, ax = plt.subplots(figsize=(10, 6))\n    if chart_type == \"bar\":\n        ax.bar(range(len(x_values)), y_values, tick_label=[str(x) for x in x_values])\n    elif chart_type == \"line\":\n        ax.plot(x_values, y_values)\n    elif chart_type == \"scatter\":\n        ax.scatter(x_values, y_values)\n    ax.set_title(title)\n    ax.set_xlabel(x_field)\n    ax.set_ylabel(y_field)\n    buf = io.BytesIO()\n    fig.savefig(buf, format='png', bbox_inches='tight')\n    plt.close(fig)\n    img_base64 = base64.b64encode(buf.getvalue()).decode()\n    html = f'<html><body><h2>{title}</h2><img src=\"data:image/png;base64,{img_base64}\"/></body></html>'\n    return {\"html\": html, \"image_base64\": img_base64}\n",
+  "compatible_with": ["statistical_analyzer", "csv_parser"],
+  "incompatible_with": []
+}

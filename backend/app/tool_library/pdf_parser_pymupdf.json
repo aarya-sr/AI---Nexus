@@ -1,0 +1,14 @@
+{
+  "id": "pdf_parser_pymupdf",
+  "name": "PyMuPDF PDF Parser",
+  "description": "Extracts text and tables from PDF files using PyMuPDF (fitz). Handles multi-page digital PDFs. Does not support OCR for scanned documents.",
+  "category": "document_extraction",
+  "accepts": ["pdf"],
+  "outputs": ["text", "tables"],
+  "output_format": "json",
+  "limitations": ["no OCR for scanned documents", "table extraction accuracy varies with complex layouts"],
+  "dependencies": ["pymupdf>=1.23.0"],
+  "code_template": "import fitz\nimport json\n\ndef pdf_parser_pymupdf(file_path: str, extract_tables: bool = True) -> dict:\n    doc = fitz.open(file_path)\n    pages = []\n    for page in doc:\n        page_data = {\"page\": page.number + 1, \"text\": page.get_text()}\n        if extract_tables:\n            page_data[\"tables\"] = page.find_tables()\n        pages.append(page_data)\n    doc.close()\n    return {\"pages\": pages, \"total_pages\": len(pages)}\n",
+  "compatible_with": ["json_transformer", "ocr_tesseract"],
+  "incompatible_with": []
+}

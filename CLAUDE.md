@@ -1,6 +1,52 @@
-# Agent Instructions
+# Frankenstein — Project Context
 
-DONOT COMMIT WITH CLAUDE's name
+## What This Is
+
+PS-03 hackathon project. Meta-agentic system — takes natural language prompt, builds working AI agent pipelines.
+
+## Key Docs
+
+- `docs/Frankenstein_Solution_Approach.md` — full architecture, data models, pipeline code, agent engineering, stack decisions
+- `docs/Frankenstein_Justification_Document.md` — why this problem matters
+- `docs/HANDOFF.md` — dev team build plan with task breakdown
+- `docs/Frankenstein_Product_Description.md` — business-side description
+
+## Architecture (Quick Ref)
+
+Six-stage LangGraph StateGraph pipeline:
+
+1. **Elicitor** (gpt-4o-mini) — extracts domain knowledge from human via structured Q&A
+2. **Architect** (claude-sonnet-4-6) — generates framework-agnostic spec from requirements
+3. **Critic** (gpt-4o) — adversarial spec review, different model family on purpose
+4. **Builder** (claude-sonnet-4-6) — compiles validated spec → CrewAI or LangGraph code
+5. **Tester** (gpt-4o-mini) — runs agents in Docker sandbox, traces failures to spec decisions
+6. **Learner** (gpt-4o-mini) — stores build outcomes in Chroma for future RAG
+
+Two human checkpoints: after requirements, after spec+critique.
+
+## Stack
+
+- **Backend:** FastAPI
+- **Frontend:** React
+- **LLMs:** OpenRouter (model-per-agent)
+- **Pipeline:** LangGraph
+- **Vector DB:** Chroma
+- **Execution:** Docker pre-built base image
+
+## Demo Targets
+
+- PS-08: Loan Underwriting Co-Pilot
+- PS-06: Supplier Reliability Scoring Agent
+
+## Rules
+
+- DONOT READ BMAD FILES UNLESS TOLD TO
+- Read Solution Approach doc before making architectural decisions
+- All data models defined in Solution Approach — use those schemas
+- Tool Schema Library must be pre-seeded before testing
+
+
+# Agent Instructions
 
 This project uses **bd** (beads) for issue tracking. Run `bd onboard` to get started.
 

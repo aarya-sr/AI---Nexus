@@ -1,0 +1,14 @@
+{
+  "id": "json_transformer",
+  "name": "JSON Transformer",
+  "description": "Restructures JSON data by renaming fields, filtering, flattening nested structures, and converting between formats. General-purpose data reshaping tool.",
+  "category": "data_processing",
+  "accepts": ["json", "text"],
+  "outputs": ["json"],
+  "output_format": "json",
+  "limitations": ["transformation rules must be explicit", "no schema inference"],
+  "dependencies": [],
+  "code_template": "import json\n\ndef json_transformer(data, field_mapping: dict[str, str] | None = None, filter_fields: list[str] | None = None) -> dict:\n    if isinstance(data, str):\n        data = json.loads(data)\n    result = data\n    if field_mapping:\n        if isinstance(result, list):\n            result = [{field_mapping.get(k, k): v for k, v in item.items()} for item in result]\n        elif isinstance(result, dict):\n            result = {field_mapping.get(k, k): v for k, v in result.items()}\n    if filter_fields:\n        if isinstance(result, list):\n            result = [{k: v for k, v in item.items() if k in filter_fields} for item in result]\n        elif isinstance(result, dict):\n            result = {k: v for k, v in result.items() if k in filter_fields}\n    return {\"transformed\": result}\n",
+  "compatible_with": ["pdf_parser_pymupdf", "csv_parser", "financial_calculator"],
+  "incompatible_with": []
+}

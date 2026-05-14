@@ -1,0 +1,14 @@
+{
+  "id": "web_search",
+  "name": "Web Search",
+  "description": "Searches the web for information using a query string. Returns structured JSON results with titles, URLs, and snippets.",
+  "category": "research",
+  "accepts": ["query_string"],
+  "outputs": ["json"],
+  "output_format": "json",
+  "limitations": ["requires internet access", "rate limited", "results may be stale"],
+  "dependencies": ["requests>=2.31.0", "beautifulsoup4>=4.12.0"],
+  "code_template": "import requests\nfrom bs4 import BeautifulSoup\n\ndef web_search(query: str, max_results: int = 5) -> dict:\n    # Placeholder: in production, use a search API (SerpAPI, Brave, etc.)\n    return {\"query\": query, \"results\": [], \"note\": \"Search API not configured. Replace with actual search provider.\"}\n",
+  "compatible_with": ["json_transformer", "llm_reasoner"],
+  "incompatible_with": []
+}

@@ -1,0 +1,14 @@
+{
+  "id": "file_reader",
+  "name": "File Reader",
+  "description": "Reads text, JSON, and YAML files and returns their content in a structured format.",
+  "category": "data_ingestion",
+  "accepts": ["txt", "json", "yaml"],
+  "outputs": ["text", "json"],
+  "output_format": "json",
+  "limitations": ["binary files not supported", "max file size 50MB"],
+  "dependencies": ["pyyaml>=6.0"],
+  "code_template": "import json\nimport yaml\nfrom pathlib import Path\n\ndef file_reader(file_path: str) -> dict:\n    path = Path(file_path)\n    content = path.read_text()\n    suffix = path.suffix.lower()\n    if suffix == \".json\":\n        return {\"format\": \"json\", \"data\": json.loads(content)}\n    elif suffix in (\".yaml\", \".yml\"):\n        return {\"format\": \"yaml\", \"data\": yaml.safe_load(content)}\n    else:\n        return {\"format\": \"text\", \"data\": content}\n",
+  "compatible_with": ["json_transformer"],
+  "incompatible_with": []
+}

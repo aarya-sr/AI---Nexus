@@ -1,0 +1,14 @@
+{
+  "id": "ocr_tesseract",
+  "name": "Tesseract OCR",
+  "description": "Extracts text from images and scanned PDFs using Tesseract OCR engine. Accuracy varies with image quality.",
+  "category": "document_extraction",
+  "accepts": ["image", "scanned_pdf"],
+  "outputs": ["text"],
+  "output_format": "json",
+  "limitations": ["accuracy varies with image quality", "slow on large documents", "requires tesseract system binary"],
+  "dependencies": ["pytesseract>=0.3.10", "Pillow>=10.0.0"],
+  "code_template": "import pytesseract\nfrom PIL import Image\n\ndef ocr_tesseract(file_path: str, language: str = \"eng\") -> dict:\n    image = Image.open(file_path)\n    text = pytesseract.image_to_string(image, lang=language)\n    confidence_data = pytesseract.image_to_data(image, output_type=pytesseract.Output.DICT)\n    avg_confidence = sum(float(c) for c in confidence_data[\"conf\"] if c != \"-1\") / max(len([c for c in confidence_data[\"conf\"] if c != \"-1\"]), 1)\n    return {\"text\": text, \"confidence\": round(avg_confidence / 100, 2)}\n",
+  "compatible_with": ["pdf_parser_pymupdf", "json_transformer"],
+  "incompatible_with": []
+}

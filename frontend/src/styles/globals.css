@@ -1,0 +1,122 @@
+:root {
+  /* Laboratory Palette */
+  --bg: #0a0d08;
+  --formaldehyde: #39ff14;
+  --formaldehyde-alt: #00ff41;
+  --amber: #ffb347;
+  --bone: #f5f0e8;
+  --copper: #b87333;
+  --crimson: #8b0000;
+
+  /* Derived */
+  --bg-lighter: #111a0d;
+  --formaldehyde-dim: rgba(57, 255, 20, 0.15);
+  --formaldehyde-glow: rgba(57, 255, 20, 0.4);
+  --amber-dim: rgba(255, 179, 71, 0.2);
+  --copper-dim: rgba(184, 115, 51, 0.3);
+  --bone-dim: rgba(245, 240, 232, 0.6);
+
+  /* Typography */
+  --font-display: 'Special Elite', cursive;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --font-body: 'EB Garamond', serif;
+
+  /* Spacing */
+  --section-pad: clamp(3rem, 8vh, 6rem);
+}
+
+*,
+*::before,
+*::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--bg);
+  color: var(--bone);
+  font-family: var(--font-body);
+  line-height: 1.6;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Parallax lab graph paper */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    radial-gradient(circle, rgba(184,115,51,0.06) 1px, transparent 1px);
+  background-size: 40px 40px;
+  z-index: -2;
+  pointer-events: none;
+}
+
+/* Vignette overlay at section boundaries */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(10,13,8,0.4) 100%);
+  z-index: -1;
+  pointer-events: none;
+}
+
+/* Selection */
+::selection {
+  background: var(--formaldehyde-dim);
+  color: var(--formaldehyde);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--copper-dim);
+  border-radius: 3px;
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Section base */
+section {
+  padding: var(--section-pad) clamp(1rem, 5vw, 4rem);
+}
+
+/* Links */
+a {
+  color: var(--formaldehyde);
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+
+/* Utility */
+.lab-label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--bone-dim);
+}

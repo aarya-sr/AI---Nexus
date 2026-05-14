@@ -1,0 +1,14 @@
+{
+  "id": "scoring_engine",
+  "name": "Scoring Engine",
+  "description": "Produces weighted scores from metrics. Takes a set of metrics with weights and produces a composite score with per-metric breakdown and reasoning.",
+  "category": "reasoning",
+  "accepts": ["json"],
+  "outputs": ["json"],
+  "output_format": "json",
+  "limitations": ["weights must sum to 1.0", "linear scoring only"],
+  "dependencies": [],
+  "code_template": "def scoring_engine(data: dict, weights: dict[str, float] | None = None) -> dict:\n    metrics = data.get(\"statistics\", data)\n    if weights is None:\n        fields = list(metrics.keys())\n        weights = {f: 1.0 / len(fields) for f in fields}\n    scores = {}\n    total_score = 0.0\n    for field, weight in weights.items():\n        if field not in metrics:\n            scores[field] = {\"score\": 0, \"weight\": weight, \"reason\": f\"Missing metric: {field}\"}\n            continue\n        value = metrics[field] if isinstance(metrics[field], (int, float)) else metrics[field].get(\"mean\", 0)\n        normalized = min(max(value / 100, 0), 1)\n        weighted = normalized * weight\n        total_score += weighted\n        scores[field] = {\"raw_value\": value, \"normalized\": round(normalized, 4), \"weighted\": round(weighted, 4), \"weight\": weight}\n    return {\"total_score\": round(total_score, 4), \"per_metric\": scores, \"reasoning\": \"; \".join(f\"{k}: {v.get('weighted', 0):.4f} (weight {v['weight']})\" for k, v in scores.items())}\n",
+  "compatible_with": ["statistical_analyzer", "report_generator"],
+  "incompatible_with": []
+}

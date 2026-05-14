@@ -1,0 +1,14 @@
+{
+  "id": "csv_parser",
+  "name": "CSV Parser",
+  "description": "Parses CSV files into structured JSON data. Handles common CSV variants including different delimiters and encodings.",
+  "category": "data_ingestion",
+  "accepts": ["csv"],
+  "outputs": ["json"],
+  "output_format": "json",
+  "limitations": ["memory-limited for files over 500MB", "assumes header row by default"],
+  "dependencies": ["pandas>=2.0.0"],
+  "code_template": "import pandas as pd\nimport json\n\ndef csv_parser(file_path: str, delimiter: str = \",\") -> dict:\n    df = pd.read_csv(file_path, delimiter=delimiter)\n    records = df.to_dict(orient=\"records\")\n    return {\"data\": records, \"columns\": list(df.columns), \"row_count\": len(df)}\n",
+  "compatible_with": ["statistical_analyzer", "json_transformer"],
+  "incompatible_with": []
+}

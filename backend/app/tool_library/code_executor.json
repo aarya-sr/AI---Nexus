@@ -1,0 +1,14 @@
+{
+  "id": "code_executor",
+  "name": "Code Executor",
+  "description": "Executes Python code strings in a restricted environment and returns the output. Used for dynamic computation tasks.",
+  "category": "computation",
+  "accepts": ["python_code"],
+  "outputs": ["execution_output"],
+  "output_format": "json",
+  "limitations": ["sandboxed execution only", "no file system access", "30 second timeout", "no network access"],
+  "dependencies": [],
+  "code_template": "import io\nimport contextlib\n\ndef code_executor(code: str, timeout: int = 30) -> dict:\n    stdout = io.StringIO()\n    stderr = io.StringIO()\n    result = None\n    try:\n        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):\n            exec_globals = {\"__builtins__\": __builtins__}\n            exec(code, exec_globals)\n            result = exec_globals.get(\"result\", None)\n    except Exception as e:\n        return {\"success\": False, \"error\": str(e), \"stdout\": stdout.getvalue(), \"stderr\": stderr.getvalue()}\n    return {\"success\": True, \"result\": result, \"stdout\": stdout.getvalue(), \"stderr\": stderr.getvalue()}\n",
+  "compatible_with": ["llm_reasoner"],
+  "incompatible_with": []
+}

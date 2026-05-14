@@ -1,0 +1,14 @@
+{
+  "id": "report_generator",
+  "name": "Report Generator",
+  "description": "Generates human-readable markdown or PDF reports from structured JSON analysis data. Produces formatted reports with sections, tables, and summaries.",
+  "category": "generation",
+  "accepts": ["json"],
+  "outputs": ["markdown", "pdf"],
+  "output_format": "markdown",
+  "limitations": ["PDF output requires additional dependencies", "template-based formatting only"],
+  "dependencies": [],
+  "code_template": "def report_generator(data: dict, title: str = \"Analysis Report\") -> dict:\n    sections = []\n    sections.append(f\"# {title}\\n\")\n    sections.append(f\"## Executive Summary\\n\")\n    if \"risk_score\" in data:\n        risk_level = \"Low\" if data[\"risk_score\"] < 0.3 else \"Medium\" if data[\"risk_score\"] < 0.6 else \"High\"\n        sections.append(f\"**Risk Score:** {data['risk_score']} ({risk_level} Risk)\\n\")\n    if \"rule_results\" in data:\n        sections.append(\"## Detailed Analysis\\n\")\n        for result in data[\"rule_results\"]:\n            status = \"PASS\" if result[\"passed\"] else \"FAIL\"\n            sections.append(f\"- **{result['rule']}**: {status} — {result['reason']}\")\n        sections.append(\"\")\n    if \"reasoning\" in data:\n        sections.append(f\"## Reasoning\\n\\n{data['reasoning']}\\n\")\n    report_md = \"\\n\".join(sections)\n    summary = f\"Risk assessment complete. Score: {data.get('risk_score', 'N/A')}.\"\n    return {\"report_markdown\": report_md, \"executive_summary\": summary}\n",
+  "compatible_with": ["rule_engine", "financial_calculator", "scoring_engine"],
+  "incompatible_with": []
+}

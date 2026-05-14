@@ -1,0 +1,14 @@
+{
+  "id": "llm_reasoner",
+  "name": "LLM Reasoner",
+  "description": "Uses an LLM to reason over text input and produce a text response. General-purpose reasoning tool for analysis, summarization, and decision-making.",
+  "category": "reasoning",
+  "accepts": ["text"],
+  "outputs": ["text"],
+  "output_format": "text",
+  "limitations": ["requires LLM API access", "non-deterministic output", "context window limits"],
+  "dependencies": ["openai>=1.0.0"],
+  "code_template": "from openai import OpenAI\nimport os\n\ndef llm_reasoner(prompt: str, system_prompt: str = \"You are a helpful reasoning assistant.\", model: str = \"gpt-4o-mini\") -> dict:\n    client = OpenAI(api_key=os.getenv(\"OPENAI_API_KEY\"))\n    response = client.chat.completions.create(\n        model=model,\n        messages=[{\"role\": \"system\", \"content\": system_prompt}, {\"role\": \"user\", \"content\": prompt}],\n        temperature=0.1\n    )\n    return {\"response\": response.choices[0].message.content}\n",
+  "compatible_with": ["web_search", "json_transformer"],
+  "incompatible_with": []
+}

@@ -1,0 +1,14 @@
+{
+  "id": "statistical_analyzer",
+  "name": "Statistical Analyzer",
+  "description": "Computes statistical metrics from numerical JSON data: mean, median, std dev, trends, and outlier detection.",
+  "category": "computation",
+  "accepts": ["json"],
+  "outputs": ["json"],
+  "output_format": "json",
+  "limitations": ["requires numerical data fields", "trend detection is linear only"],
+  "dependencies": ["pandas>=2.0.0"],
+  "code_template": "import pandas as pd\n\ndef statistical_analyzer(data: dict, numeric_fields: list[str] | None = None) -> dict:\n    df = pd.DataFrame(data.get(\"data\", []))\n    if numeric_fields is None:\n        numeric_fields = df.select_dtypes(include=\"number\").columns.tolist()\n    stats = {}\n    for field in numeric_fields:\n        if field not in df.columns:\n            continue\n        col = df[field].dropna()\n        q1, q3 = col.quantile(0.25), col.quantile(0.75)\n        iqr = q3 - q1\n        outliers = col[(col < q1 - 1.5 * iqr) | (col > q3 + 1.5 * iqr)].tolist()\n        stats[field] = {\"mean\": round(col.mean(), 4), \"median\": round(col.median(), 4), \"std\": round(col.std(), 4), \"min\": round(col.min(), 4), \"max\": round(col.max(), 4), \"outlier_count\": len(outliers)}\n    return {\"statistics\": stats, \"fields_analyzed\": numeric_fields}\n",
+  "compatible_with": ["csv_parser", "scoring_engine"],
+  "incompatible_with": []
+}

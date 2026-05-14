@@ -1,0 +1,4 @@
+/* Default browser cursors — no custom cursor */
+input, textarea {
+  caret-color: var(--formaldehyde);
+}

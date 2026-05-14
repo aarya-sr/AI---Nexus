@@ -1,0 +1,10 @@
+Resolved 16 packages in 1.28s
+Downloading openai (1.2MiB)
+ Downloaded openai
+Prepared 1 package in 472ms
+Installed 4 packages in 16ms
+ + distro==1.9.0
+ + jiter==0.14.0
+ + openai==2.36.0
+ + sniffio==1.3.1
+

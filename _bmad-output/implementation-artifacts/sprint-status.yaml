@@ -1,0 +1,68 @@
+# generated: 2026-05-14
+# last_updated: 2026-05-14
+# project: frankenstein
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: {project-root}/_bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-05-14
+last_updated: 2026-05-14
+project: frankenstein
+project_key: NOKEY
+tracking_system: file-system
+story_location: "{project-root}/_bmad-output/implementation-artifacts"
+
+development_status:
+  # Epic 1: Conversational Requirements Discovery
+  epic-1: in-progress
+  1-1-project-bootstrap-and-server-infrastructure: review
+  1-2-frontend-foundation-and-chat-ui: review
+  1-3-elicitor-agent-requirements-extraction: review
+  1-4-requirements-review-and-approval-checkpoint: backlog
+  epic-1-retrospective: optional
+
+  # Epic 2: Architecture Generation & Adversarial Review
+  epic-2: backlog
+  2-1-architect-agent-rag-queries-and-task-decomposition: backlog
+  2-2-architect-agent-spec-compilation: backlog
+  2-3-critic-agent-and-architect-critic-feedback-loop: backlog
+  2-4-spec-review-and-approval-checkpoint: backlog
+  epic-2-retrospective: optional
+
+  # Epic 3: Code Generation, Testing & Delivery
+  epic-3: backlog
+  3-1-builder-agent-crewai-and-langgraph-compilers: backlog
+  3-2-builder-agent-code-validation-and-self-retry: backlog
+  3-3-tester-agent-execution-and-failure-tracing: backlog
+  3-4-learner-agent-and-build-memory: backlog
+  3-5-build-progress-completion-and-download: backlog
+  epic-3-retrospective: optional

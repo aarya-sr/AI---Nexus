@@ -1,0 +1,14 @@
+{
+  "id": "financial_calculator",
+  "name": "Financial Calculator",
+  "description": "Calculates financial metrics from structured transaction data: debt-to-income ratio, income stability, overdraft frequency, and unusual transaction flags.",
+  "category": "computation",
+  "accepts": ["json"],
+  "outputs": ["json"],
+  "output_format": "json",
+  "limitations": ["requires structured transaction data with amount and category fields", "uses standard formulas only"],
+  "dependencies": [],
+  "code_template": "def financial_calculator(data: dict) -> dict:\n    transactions = data.get(\"transactions\", [])\n    incomes = [t[\"amount\"] for t in transactions if t.get(\"amount\", 0) > 0]\n    expenses = [abs(t[\"amount\"]) for t in transactions if t.get(\"amount\", 0) < 0]\n    total_income = sum(incomes)\n    total_expenses = sum(expenses)\n    dti = round(total_expenses / max(total_income, 1), 4)\n    overdrafts = sum(1 for t in transactions if t.get(\"amount\", 0) < -1000)\n    avg_income = total_income / max(len(incomes), 1)\n    income_variance = sum((i - avg_income) ** 2 for i in incomes) / max(len(incomes), 1)\n    income_stability = round(1 - min(income_variance / max(avg_income ** 2, 1), 1), 4)\n    large_unusual = [t for t in transactions if abs(t.get(\"amount\", 0)) > avg_income * 0.5 and t.get(\"category\") not in [\"payroll\", \"rent\", \"mortgage\"]]\n    return {\"dti_ratio\": dti, \"income_stability\": income_stability, \"overdraft_count\": overdrafts, \"unusual_transactions\": len(large_unusual), \"total_income\": total_income, \"total_expenses\": total_expenses}\n",
+  "compatible_with": ["rule_engine", "json_transformer"],
+  "incompatible_with": []
+}

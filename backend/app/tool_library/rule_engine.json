@@ -1,0 +1,14 @@
+{
+  "id": "rule_engine",
+  "name": "Rule Engine",
+  "description": "Evaluates data against a set of rules and produces pass/fail results with reasoning. Rules are defined as JSON objects with condition and threshold fields.",
+  "category": "reasoning",
+  "accepts": ["json"],
+  "outputs": ["json"],
+  "output_format": "json",
+  "limitations": ["rules must be structured as JSON", "no fuzzy logic support"],
+  "dependencies": [],
+  "code_template": "def rule_engine(data: dict, rules: list[dict] | None = None) -> dict:\n    if rules is None:\n        rules = [\n            {\"name\": \"dti_check\", \"field\": \"dti_ratio\", \"operator\": \"<=\", \"threshold\": 0.43, \"weight\": 0.3},\n            {\"name\": \"income_stability\", \"field\": \"income_stability\", \"operator\": \">=\", \"threshold\": 0.5, \"weight\": 0.3},\n            {\"name\": \"overdraft_check\", \"field\": \"overdraft_count\", \"operator\": \"<=\", \"threshold\": 2, \"weight\": 0.2},\n            {\"name\": \"unusual_tx\", \"field\": \"unusual_transactions\", \"operator\": \"<=\", \"threshold\": 3, \"weight\": 0.2},\n        ]\n    results = []\n    score = 0.0\n    for rule in rules:\n        value = data.get(rule[\"field\"])\n        if value is None:\n            results.append({\"rule\": rule[\"name\"], \"passed\": False, \"reason\": f\"Missing field: {rule['field']}\"})\n            continue\n        op = rule[\"operator\"]\n        threshold = rule[\"threshold\"]\n        passed = (op == \"<=\" and value <= threshold) or (op == \">=\" and value >= threshold) or (op == \"<\" and value < threshold) or (op == \">\" and value > threshold) or (op == \"==\" and value == threshold)\n        if passed:\n            score += rule.get(\"weight\", 0)\n        results.append({\"rule\": rule[\"name\"], \"passed\": passed, \"value\": value, \"threshold\": threshold, \"reason\": f\"{rule['field']} {'passed' if passed else 'failed'}: {value} {op} {threshold}\"})\n    risk_score = round(1 - score, 4)\n    return {\"risk_score\": risk_score, \"rule_results\": results, \"reasoning\": \"; \".join(r[\"reason\"] for r in results)}\n",
+  "compatible_with": ["financial_calculator", "report_generator"],
+  "incompatible_with": []
+}

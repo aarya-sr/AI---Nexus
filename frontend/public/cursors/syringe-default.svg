@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">
+  <!-- Glass syringe, empty, angled 45deg -->
+  <g transform="rotate(-45, 16, 16)">
+    <!-- Barrel -->
+    <rect x="13" y="4" width="6" height="18" rx="1" fill="none" stroke="#f5f0e8" stroke-width="1.2" opacity="0.8"/>
+    <!-- Plunger handle -->
+    <line x1="16" y1="2" x2="16" y2="5" stroke="#b87333" stroke-width="2" stroke-linecap="round"/>
+    <!-- Plunger rod -->
+    <line x1="16" y1="5" x2="16" y2="10" stroke="#f5f0e8" stroke-width="0.8" opacity="0.6"/>
+    <!-- Needle hub -->
+    <rect x="14.5" y="22" width="3" height="2" rx="0.5" fill="#b87333"/>
+    <!-- Needle -->
+    <line x1="16" y1="24" x2="16" y2="30" stroke="#f5f0e8" stroke-width="0.6" opacity="0.9"/>
+    <!-- Graduation marks -->
+    <line x1="13" y1="9" x2="14.5" y2="9" stroke="#f5f0e8" stroke-width="0.4" opacity="0.4"/>
+    <line x1="13" y1="13" x2="14.5" y2="13" stroke="#f5f0e8" stroke-width="0.4" opacity="0.4"/>
+    <line x1="13" y1="17" x2="14.5" y2="17" stroke="#f5f0e8" stroke-width="0.4" opacity="0.4"/>
+  </g>
+</svg>
