@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react"
+import { useState, useCallback } from "react"
 import type { RequirementsDoc } from "../types/models"
 
 interface Props {

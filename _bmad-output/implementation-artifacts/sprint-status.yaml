@@ -55,7 +55,7 @@ development_status:
   2-1-architect-agent-rag-queries-and-task-decomposition: review
   2-2-architect-agent-spec-compilation: done
   2-3-critic-agent-and-architect-critic-feedback-loop: review
-  2-4-spec-review-and-approval-checkpoint: backlog
+  2-4-spec-review-and-approval-checkpoint: review
   epic-2-retrospective: optional
 
   # Epic 3: Code Generation, Testing & Delivery
