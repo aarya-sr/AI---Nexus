@@ -135,8 +135,8 @@ function ChatLayout() {
   }
 
   return (
-    <div className="min-h-screen grid grid-cols-[1fr] min-[1024px]:grid-cols-[1fr_240px]">
-      <div className="flex flex-col min-w-0">
+    <div className="h-screen grid grid-cols-[1fr] min-[1024px]:grid-cols-[1fr_240px] overflow-hidden">
+      <div className="flex flex-col min-w-0 overflow-hidden">
         {/* Top bar */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-bg/80 backdrop-blur-sm shrink-0">
           <span

@@ -91,7 +91,7 @@ export function useWebSocket(sessionId: string | null) {
         case "status.stage_update":
           dispatch({
             type: "STAGE_UPDATE",
-            payload: msg.payload as { stage: string; description: string },
+            payload: msg.payload as { stage: string; description: string; status?: string },
           })
           break
 

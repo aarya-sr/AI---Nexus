@@ -267,13 +267,32 @@ async def approve_checkpoint(session_id: str, body: ApproveRequest):
             # Run builder→tester→learner as background task so HTTP responds immediately
             asyncio.create_task(_run_post_approval(session_id, config, graph_lock))
         else:
-            # Requirements approval: run synchronously (architect is fast)
+            # Requirements approval: run synchronously through architect→critic→spec checkpoint
             async with graph_lock:
                 await asyncio.to_thread(
                     compiled_graph.invoke,
                     Command(resume={"approved": True}),
                     config,
                 )
+
+            # Check if graph paused at next interrupt (spec checkpoint)
+            state = compiled_graph.get_state(config)
+            if state.next and state.tasks and hasattr(state.tasks[0], "interrupts") and state.tasks[0].interrupts:
+                interrupt_value = state.tasks[0].interrupts[0].value
+                logger.info("[%s] Forwarding post-approval interrupt to frontend", session_id)
+                if chat_ws:
+                    await _send_interrupt(chat_ws, interrupt_value, session_id)
+
+                # Send stage update for spec review
+                if status_ws and isinstance(interrupt_value, dict) and interrupt_value.get("checkpoint_type") == "spec":
+                    await send_message(status_ws, StageUpdateMessage(
+                        payload={
+                            "stage": "spec_review",
+                            "description": "Review your agent blueprint",
+                            "is_checkpoint": True,
+                        },
+                        session_id=session_id,
+                    ))
 
         logger.info("[%s] %s approved — pipeline resumed", session_id, body.checkpoint)
         return ApproveResponse(status="resumed")

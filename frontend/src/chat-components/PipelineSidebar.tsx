@@ -7,7 +7,7 @@ export function PipelineSidebar() {
   if (!hasStarted) return null
 
   return (
-    <aside className="border-l border-border p-5 animate-[slideInRight_300ms_ease-out] hidden min-[1024px]:block sticky top-0 h-screen overflow-y-auto">
+    <aside className="border-l border-border p-5 animate-[slideInRight_300ms_ease-out] hidden min-[1024px]:block h-full overflow-y-auto">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-[11px] font-medium uppercase tracking-[0.05em] text-text-tertiary">
           Pipeline

@@ -26,7 +26,7 @@ export const initialState: PipelineState = {
 export type Action =
   | { type: "SET_SESSION"; payload: string }
   | { type: "CHAT_MESSAGE"; payload: ChatEntry }
-  | { type: "STAGE_UPDATE"; payload: { stage: string; description: string } }
+  | { type: "STAGE_UPDATE"; payload: { stage: string; description: string; status?: string } }
   | { type: "PROGRESS"; payload: { stage: string; percent: number; detail: string } }
   | { type: "COMPLETE"; payload: { session_id: string; framework: string; download_url: string; summary: string } }
   | { type: "ERROR"; payload: { stage: string; message: string; recoverable: boolean } }
@@ -43,13 +43,17 @@ export function pipelineReducer(state: PipelineState, action: Action): PipelineS
       return { ...state, sessionId: action.payload }
 
     case "CHAT_MESSAGE":
+      if (state.messages.some(m => m.id === action.payload.id)) return state
       return { ...state, messages: [...state.messages, action.payload] }
 
     case "STAGE_UPDATE": {
-      const { stage } = action.payload
+      const rawStage = action.payload.stage
+      const stage = (rawStage === "elicitor_ask" || rawStage === "elicitor_compile") ? "elicitor" : rawStage
+      if (stage === "idle") return state
+      const isDone = action.payload.status === "done"
       const stages = state.stages.map((s) => {
-        if (s.id === stage) return { ...s, status: "active" as const, description: action.payload.description }
-        if (s.status === "active" && s.id !== stage) return { ...s, status: "complete" as const }
+        if (s.id === stage) return { ...s, status: isDone ? "complete" as const : "active" as const, description: action.payload.description }
+        if (!isDone && s.status === "active" && s.id !== stage) return { ...s, status: "complete" as const }
         return s
       })
       return { ...state, stages, currentStage: stage, isWorking: true }
