@@ -229,6 +229,11 @@ async def approve_checkpoint(session_id: str, body: ApproveRequest):
     config = {"configurable": {"thread_id": thread_id}}
     is_spec = body.checkpoint == "spec"
 
+    # Idempotency: if graph already moved past checkpoint, return early
+    graph_state = compiled_graph.get_state(config)
+    if not graph_state.next:
+        return ApproveResponse(status="resumed")
+
     graph_lock = _get_graph_lock(session_id)
 
     if body.approved:
@@ -267,6 +272,20 @@ async def approve_checkpoint(session_id: str, body: ApproveRequest):
             # Run builder→tester→learner as background task so HTTP responds immediately
             asyncio.create_task(_run_post_approval(session_id, config, graph_lock))
         else:
+            # Mark elicitor done, architect active before running
+            if status_ws:
+                try:
+                    await send_message(status_ws, StageUpdateMessage(
+                        payload={"stage": "elicitor", "description": "Requirements gathered", "status": "done"},
+                        session_id=session_id,
+                    ))
+                    await send_message(status_ws, StageUpdateMessage(
+                        payload={"stage": "architect", "description": "Designing your agent architecture"},
+                        session_id=session_id,
+                    ))
+                except Exception:
+                    logger.warning("Failed to send pre-approval stage updates to %s", session_id)
+
             # Requirements approval: run synchronously through architect→critic→spec checkpoint
             async with graph_lock:
                 await asyncio.to_thread(
@@ -274,6 +293,17 @@ async def approve_checkpoint(session_id: str, body: ApproveRequest):
                     Command(resume={"approved": True}),
                     config,
                 )
+
+            # Mark architect done, critic done retroactively
+            if status_ws:
+                try:
+                    for sid, desc in [("architect", "Architecture designed"), ("critic", "Blueprint reviewed")]:
+                        await send_message(status_ws, StageUpdateMessage(
+                            payload={"stage": sid, "description": desc, "status": "done"},
+                            session_id=session_id,
+                        ))
+                except Exception:
+                    logger.warning("Failed to send post-approval stage updates to %s", session_id)
 
             # Check if graph paused at next interrupt (spec checkpoint)
             state = compiled_graph.get_state(config)

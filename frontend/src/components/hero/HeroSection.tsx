@@ -27,10 +27,10 @@ export function HeroSection() {
   const [curtainOpen, setCurtainOpen] = useState(false)
   const [showContent, setShowContent] = useState(false)
 
-  // Opening curtain sequence
+  // Opening curtain sequence — fast reveal
   useEffect(() => {
-    const t1 = setTimeout(() => setCurtainOpen(true), 300)
-    const t2 = setTimeout(() => setShowContent(true), 800)
+    const t1 = setTimeout(() => setCurtainOpen(true), 100)
+    const t2 = setTimeout(() => setShowContent(true), 300)
     return () => { clearTimeout(t1); clearTimeout(t2) }
   }, [])
 
@@ -41,18 +41,6 @@ export function HeroSection() {
     }, 3000)
     return () => clearInterval(interval)
   }, [])
-
-  // Auto-demo after 12s
-  useEffect(() => {
-    if (assemblyPhase !== 'idle' && assemblyPhase !== 'orbiting') return
-    const timeout = setTimeout(() => {
-      if (assemblyPhase === 'idle' || assemblyPhase === 'orbiting') {
-        setUserPrompt(PLACEHOLDERS[0])
-        triggerAssembly()
-      }
-    }, 12000)
-    return () => clearTimeout(timeout)
-  }, [assemblyPhase, triggerAssembly, setUserPrompt])
 
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
@@ -92,25 +80,17 @@ export function HeroSection() {
               className="curtain curtain--left"
               initial={{ x: 0 }}
               exit={{ x: '-100%' }}
-              transition={{ duration: 0.8, ease: [0.76, 0, 0.24, 1] }}
+              transition={{ duration: 0.3, ease: [0.76, 0, 0.24, 1] }}
             />
             <motion.div
               className="curtain curtain--right"
               initial={{ x: 0 }}
               exit={{ x: '100%' }}
-              transition={{ duration: 0.8, ease: [0.76, 0, 0.24, 1] }}
+              transition={{ duration: 0.3, ease: [0.76, 0, 0.24, 1] }}
             />
           </>
         )}
       </AnimatePresence>
-
-      {/* Screen flicker on load */}
-      <motion.div
-        className="screen-flicker"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: [0, 0.15, 0, 0.1, 0, 0.05, 0] }}
-        transition={{ duration: 1.2, delay: 0.6 }}
-      />
 
       {/* 3D Canvas — background */}
       <div className="hero-canvas">
@@ -140,10 +120,10 @@ export function HeroSection() {
           stroke="var(--formaldehyde)"
           strokeWidth="2"
           fill="none"
-          opacity="0.4"
+          opacity="0.15"
           initial={{ pathLength: 0 }}
           animate={showContent ? { pathLength: 1 } : {}}
-          transition={{ duration: 3, delay: 3.5, ease: 'easeInOut' }}
+          transition={{ duration: 2, delay: 0.5, ease: 'easeInOut' }}
         />
       </svg>
 
@@ -162,7 +142,7 @@ export function HeroSection() {
           onSubmit={handleSubmit}
           initial={{ opacity: 0, y: 30 }}
           animate={showContent ? { opacity: 1, y: 0 } : {}}
-          transition={{ delay: 4.5, duration: 0.6 }}
+          transition={{ delay: 1, duration: 0.6 }}
         >
           <label className="prompt-label">DESCRIBE YOUR WORKFLOW —</label>
           <div className="prompt-input-wrapper">
@@ -185,25 +165,6 @@ export function HeroSection() {
             </button>
           </div>
         </motion.form>
-      </motion.div>
-
-      {/* Scroll indicator */}
-      <motion.div
-        className="scroll-indicator"
-        initial={{ opacity: 0 }}
-        animate={showContent ? { opacity: 1 } : {}}
-        transition={{ delay: 5.5, duration: 1 }}
-      >
-        <span className="scroll-indicator-text">SCROLL TO DESCEND</span>
-        <motion.div
-          className="scroll-indicator-arrow"
-          animate={{ y: [0, 6, 0] }}
-          transition={{ duration: 1.5, repeat: Infinity }}
-        >
-          <svg width="16" height="10" viewBox="0 0 16 10">
-            <path d="M 1 1 L 8 8 L 15 1" stroke="var(--formaldehyde)" strokeWidth="1.5" fill="none" />
-          </svg>
-        </motion.div>
       </motion.div>
 
       {/* Assembly overlays */}
@@ -267,9 +228,11 @@ export function HeroSection() {
           flex-direction: column;
           align-items: center;
           gap: 2.5rem;
-          padding: 0 1rem;
+          padding: 2rem;
           max-width: 700px;
           width: 100%;
+          background: radial-gradient(ellipse at center, rgba(10,13,8,0.75) 0%, transparent 70%);
+          border-radius: 24px;
         }
 
         /* Scroll indicator */

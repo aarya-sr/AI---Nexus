@@ -1,19 +1,24 @@
 """Builder agent — compiles validated specs into working code.
 
-Model: claude-sonnet-4-6
+Model: claude-sonnet-4-6 (overridable per config)
 Purpose: Template-aware code generation for CrewAI or LangGraph projects.
-Process: Read spec + tool code_templates → select framework compiler →
-         generate project files → validate syntax → package as CodeBundle.
 
-Handles rebuild: when failure_traces are present, incorporates fix feedback.
+Multi-pass architecture:
+  1. PLAN — LLM produces a BuildPlan (tool signatures, agent task templates,
+     kickoff inputs) before writing code. Forces explicit cross-referencing.
+  2. GENERATE — LLM writes code conforming to the plan.
+  3. VALIDATE — run `_validation.run_all` (AST imports, tool param safety,
+     entry-point wiring, tool coverage).
+  4. REPAIR — if validation fails, send the LLM the errors and ask for a
+     targeted patch. Up to `settings.max_builder_repair_iterations` retries.
 """
 
 import json
 import logging
-import py_compile
-import tempfile
 from pathlib import Path
 
+from app.agents import _validation
+from app.config import settings
 from app.models.code import CodeBundle
 from app.models.spec import AgentSpec
 from app.models.state import FrankensteinState
@@ -25,186 +30,193 @@ logger = logging.getLogger(__name__)
 
 AGENT_NAME = "builder"
 
-# ── Framework-specific system prompts ─────────────────────────────────
-
 _SHARED_RULES = """\
 
-## CRITICAL RULES
-- Every tool in spec.tools MUST be implemented in tools.py using code_templates
-- Every agent in spec.agents MUST appear in the orchestration
-- Tool implementations come from code_templates — adapt, do NOT rewrite
-- requirements.txt MUST list all dependencies (from spec.tools + framework)
-- All generated Python files MUST be syntactically valid
-- Use exact agent IDs, roles, goals, backstories from the spec
+## NON-NEGOTIABLE RULES (violating any of these = broken build)
 
-Return a single JSON object mapping filename → complete source code:
-{"main.py": "...", "agents.py": "...", "README.md": "...", ...}
+1. EVERY tool referenced anywhere in `agents.py` MUST be defined as a function
+   in `tools.py`. No imports of symbols that don't exist.
 
-## README.md
-Always include a README.md with:
-- Project title and description (from spec metadata)
-- Prerequisites (Python 3.11+, required API keys)
-- Installation: `pip install -r requirements.txt`
-- Configuration: describe config.yaml fields (especially API keys — use env vars or config, never hardcode)
-- Run command: `python main.py`
+2. Tool functions follow a STRICT convention:
+       def tool_name(data: dict) -> dict:
+   - Exactly ONE parameter named `data`, typed `dict`.
+   - NO default values on parameters (CrewAI's strict schema rejects them).
+   - NO *args, **kwargs.
+   - Return a dict.
+
+3. NEVER use these names as parameters: `schema`, `dict`, `json`, `copy`,
+   `parse_obj`, `validate`, `construct`, or anything starting with `model_`.
+   They shadow `pydantic.BaseModel` attributes.
+
+4. The pipeline MUST receive input via `crew.kickoff(inputs={...})` /
+   `graph.invoke({...})`, keys matching spec.metadata.pipeline_input_schema.
+
+5. `main.py` MUST load real input data — NEVER pass `{}`. Load
+   `sample_data.json` if present, otherwise fall back to an inline
+   `SPEC_SAMPLE_INPUT` constant matching spec.sample_input.
+
+6. requirements.txt MUST list every pip dependency used.
+
+7. All files MUST be syntactically valid.
+
+8. README.md MUST cover prerequisites, env (OPENROUTER_API_KEY), install,
+   run command, expected input/output shape.
+
+## Output format
+Return ONE JSON object: {"filename": "<full file content>", ...}.
+Do NOT wrap content in code fences. Do NOT add commentary outside the JSON.
 """
 
 CREWAI_SYSTEM = """\
-You are the Builder agent generating a **CrewAI** project from an AgentSpec.
+You are the Builder generating a CrewAI project from an AgentSpec.
 
-Produce a complete, runnable Python project as JSON: {filename: source_code}.
+## Required files
 
-## Required Files
-
-### main.py
+### main.py (template — adapt SPEC_SAMPLE_INPUT to actual sample)
 ```python
+import json, os
+from pathlib import Path
+from dotenv import load_dotenv
 from orchestration import create_crew
 
+SPEC_SAMPLE_INPUT = {}  # fill from spec.sample_input
+
+def load_inputs():
+    p = Path(__file__).parent / "sample_data.json"
+    if p.exists():
+        return json.loads(p.read_text())
+    return SPEC_SAMPLE_INPUT
+
 def main():
+    load_dotenv()
+    if os.getenv("OPENROUTER_API_KEY") and not os.getenv("OPENAI_API_KEY"):
+        os.environ["OPENAI_API_KEY"] = os.environ["OPENROUTER_API_KEY"]
+        os.environ.setdefault("OPENAI_BASE_URL", "https://openrouter.ai/api/v1")
+        os.environ.setdefault("OPENAI_MODEL_NAME", "openai/gpt-4o-mini")
+
+    inputs = load_inputs()
     crew = create_crew()
-    result = crew.kickoff(inputs={})
-    import json
-    print(json.dumps({"result": result.raw}, indent=2))
+    result = crew.kickoff(inputs=inputs)
+    print(json.dumps({"result": str(result.raw if hasattr(result, "raw") else result)}, indent=2))
 
 if __name__ == "__main__":
     main()
 ```
 
 ### agents.py
-```python
-from crewai import Agent
-from tools import *
-
-def create_agents() -> dict[str, Agent]:
-    return {
-        "agent_id": Agent(
-            role="from spec",
-            goal="from spec",
-            backstory="from spec",
-            tools=[tool_function_name],
-            verbose=True,
-        ),
-    }
-```
+Import every tool function explicitly. Build the Agent dict per spec.
 
 ### tools.py
-Each tool wraps a code_template with the @tool decorator:
+Every tool referenced anywhere MUST appear here:
 ```python
 from crewai.tools import tool
 
-@tool("Tool Display Name")
-def tool_function(param: str) -> str:
-    \"\"\"Description from tool schema.\"\"\"
-    # code_template implementation adapted here
+@tool("Display Name")
+def tool_function(data: dict) -> dict:
+    \"\"\"Adapt the code_template — single dict-param convention.\"\"\"
+    value = data.get("field_x")
     ...
+    return {"output_key": result}
 ```
 
 ### orchestration.py
-```python
-from crewai import Crew, Task, Process
-from agents import create_agents
-
-def create_crew() -> Crew:
-    agents = create_agents()
-    tasks = [
-        Task(description="...", agent=agents["id"], expected_output="..."),
-    ]
-    return Crew(
-        agents=list(agents.values()),
-        tasks=tasks,
-        process=Process.sequential,
-    )
-```
-
-### config.yaml
-Agent configuration in YAML format.
+Task descriptions MUST contain `{field_name}` template variables matching
+keys in kickoff_inputs. Example: `description="Analyze {application_data} for fraud risk..."`.
 
 ### requirements.txt
-crewai plus all tool dependencies.
+crewai>=0.70.0, python-dotenv>=1.0.0, plus tool deps.
+
+### .env.example
+OPENROUTER_API_KEY=...
+
+### sample_data.json
+A JSON dict matching spec.sample_input exactly.
 """ + _SHARED_RULES
+
 
 LANGGRAPH_SYSTEM = """\
-You are the Builder agent generating a **LangGraph** project from an AgentSpec.
+You are the Builder generating a LangGraph project from an AgentSpec.
 
-Produce a complete, runnable Python project as JSON: {filename: source_code}.
-
-## Required Files
+## Required files
 
 ### main.py
-```python
-from orchestration import create_graph
-
-def main():
-    graph = create_graph()
-    result = graph.invoke({})
-    import json
-    print(json.dumps(result, indent=2, default=str))
-
-if __name__ == "__main__":
-    main()
-```
+Same env-injection + sample-loading pattern as the CrewAI builder. Call
+`graph.invoke(load_inputs())`.
 
 ### state.py
-```python
-from typing import TypedDict
-
-class PipelineState(TypedDict, total=False):
-    # Union of all io_contract fields
-    field_name: type
-```
+TypedDict union of all io_contract fields + pipeline_input_schema fields.
 
 ### agents.py
-Each agent is a function: state → partial update dict.
-```python
-from tools import *
-
-def agent_id(state: dict) -> dict:
-    data = state["input_field"]
-    result = tool_function(data)
-    return {"output_field": result}
-```
+Each agent: `def agent_id(state: dict) -> dict: ...`.
 
 ### tools.py
-Tool implementations from code_templates (plain functions, no decorator):
-```python
-def tool_function(input_param: type) -> type:
-    # code_template implementation
-    ...
-```
+Same `def fn(data: dict) -> dict` convention.
 
 ### orchestration.py
-```python
-from langgraph.graph import StateGraph, END
-from state import PipelineState
-from agents import *
-
-def create_graph():
-    graph = StateGraph(PipelineState)
-    graph.add_node("agent_id", agent_id)
-    graph.set_entry_point("first_agent")
-    graph.add_edge("agent_a", "agent_b")
-    # conditional edges if spec has conditions
-    graph.add_edge("last_agent", END)
-    return graph.compile()
-```
+StateGraph wiring per spec.execution_flow.
 
 ### requirements.txt
-langgraph, langchain-core, plus all tool dependencies.
+langgraph>=0.2.0, langchain-core>=0.3.0, langchain-openai>=0.2.0, python-dotenv>=1.0.0, tool deps.
+
+### .env.example, sample_data.json
+Same as CrewAI.
 """ + _SHARED_RULES
 
-REBUILD_ADDENDUM = """\
 
-## PREVIOUS BUILD FAILED — FIX THESE ISSUES
+PLAN_SYSTEM = """\
+You are planning a code build. Before writing any code, produce a BuildPlan
+that pins down: tool signatures, agent task templates, and how data enters
+the pipeline. This plan will be enforced verbatim in the generation pass.
 
-The following failures were traced from the last build attempt.
-Address each one in the regenerated code.  Do NOT introduce new issues.
+Return ONE JSON object (no commentary):
+{
+  "files": [{"name": "main.py", "purpose": "...", "exports": ["main"]}, ...],
+  "tool_functions": [
+    {
+      "name": "<snake_case>",
+      "description": "<one line>",
+      "input_subkeys": ["<key in data dict>", ...],
+      "output_subkeys": ["<key in returned dict>", ...]
+    }
+  ],
+  "agent_task_map": [
+    {
+      "agent_id": "<from spec>",
+      "task_description_template": "Use {field_a} and {field_b} to ...",
+      "expected_output": "<from spec io_contract>",
+      "tools_used": ["<tool function name>", ...]
+    }
+  ],
+  "kickoff_inputs": {"<field>": "<source: pipeline_input_schema or upstream agent>"}
+}
 
-Failure traces:
-{failure_traces}
+HARD RULES:
+- Every tool referenced in tools_used MUST appear in tool_functions.
+- All tool_functions take a single `data: dict` parameter.
+- Every key in kickoff_inputs MUST be a field of spec.metadata.pipeline_input_schema.
+- Every {placeholder} in task_description_template MUST be a key in kickoff_inputs
+  OR a known upstream-agent output field.
 """
 
 
-# ── Agent Entry Point ─────────────────────────────────────────────────
+REPAIR_SYSTEM = """\
+You are repairing a failed code build. You receive:
+  - the current files
+  - validator errors (each with stable `code`, `message`, `fix` hint)
+  - the original spec + build plan
+
+Fix ONLY the listed errors. Do not refactor unrelated code.
+Re-emit the COMPLETE file set as JSON: {"filename": "<full content>", ...}.
+Every file in the original set must appear in your response.
+
+Common patterns:
+- UNRESOLVED_SYMBOL → add the missing function. Use `def fn(data: dict) -> dict`.
+- PARAM_SHADOWS_PYDANTIC → rename or refactor to single-dict convention.
+- TOOL_WRONG_ARITY / TOOL_HAS_DEFAULTS → convert to `def fn(data: dict) -> dict`,
+  read former params from `data` subkeys.
+- KICKOFF_EMPTY_INPUTS → load sample_data.json / SPEC_SAMPLE_INPUT, pass to kickoff.
+- ENTRY_POINT_MISSING_FIELD → ensure kickoff dict has every pipeline_input_schema field.
+"""
 
 
 def builder_agent(
@@ -213,7 +225,7 @@ def builder_agent(
     llm: LLMService | None = None,
     chroma: ChromaService | None = None,
 ) -> dict:
-    """Builder node — compiles AgentSpec into a CodeBundle."""
+    """Plan → generate → validate → repair loop."""
     from app.services.chroma_service import ChromaService as _CS
     from app.services.llm_service import LLMService as _LS
 
@@ -223,86 +235,114 @@ def builder_agent(
         chroma = _CS()
 
     spec: AgentSpec = state["spec"]
-    logger.info(
-        "Builder: compiling '%s' → %s",
-        spec.metadata.name,
-        spec.metadata.framework_target,
-    )
+    framework = spec.metadata.framework_target
+    logger.info("Builder: compiling '%s' → %s", spec.metadata.name, framework)
 
-    # ── Gather tool code_templates ────────────────────────────────────
     tool_templates = _get_tool_templates(chroma, spec)
     logger.info("Builder: loaded %d tool templates", len(tool_templates))
 
-    # ── Failure feedback from previous iteration ─────────────────────
     failure_feedback = None
     if state.get("failure_traces"):
         failure_feedback = [ft.model_dump() for ft in state["failure_traces"]]
 
-    # ── Generate code ────────────────────────────────────────────────
-    files = _generate_code(llm, spec, tool_templates, failure_feedback)
+    plan = _plan_build(llm, spec, tool_templates, failure_feedback)
+    logger.info("Builder: plan produced — %d tools, %d agents",
+                len(plan.get("tool_functions", [])),
+                len(plan.get("agent_task_map", [])))
 
-    # ── Collect dependencies ─────────────────────────────────────────
+    files = _generate_code(llm, spec, tool_templates, plan, failure_feedback)
+    _inject_sample_data(files, spec)
+
+    repair_history: list[dict] = list(state.get("repair_history", []))
+    max_repairs = settings.max_builder_repair_iterations
+    errors: list[dict] = []
+
+    for attempt in range(max_repairs + 1):
+        errors = _validation.run_all(files, spec=spec, framework=framework)
+        critical = [e for e in errors if e.get("severity") == "error"]
+        if not critical:
+            logger.info("Builder: validation clean on attempt %d", attempt)
+            break
+
+        logger.warning("Builder: %d critical errors on attempt %d: %s",
+                       len(critical), attempt,
+                       [e["code"] for e in critical])
+
+        if attempt == max_repairs:
+            logger.error("Builder: exhausted repair budget, shipping with errors")
+            break
+
+        repair_history.append({"attempt": attempt, "errors": critical})
+        files = _repair_code(llm, files, critical, spec, plan)
+        _inject_sample_data(files, spec)
+
     deps = _collect_dependencies(spec, tool_templates)
+    passed = not any(e.get("severity") == "error" for e in errors)
+    error_strings = [
+        f"{e.get('code', 'ERR')}: {e.get('file', '?')}: {e.get('message', '')}"
+        for e in errors
+    ]
 
-    # ── Validate syntax ──────────────────────────────────────────────
-    passed, errors = _validate_syntax(files)
-    if errors:
-        logger.warning("Builder: %d validation errors: %s", len(errors), errors)
-    else:
-        logger.info("Builder: all files pass syntax check")
-
-    # ── Import resolution check ─────────────────────────────────────
-    import_errors = _check_imports(files, deps)
-    if import_errors:
-        logger.warning("Builder: %d import issues: %s", len(import_errors), import_errors)
-        errors.extend(import_errors)
-        passed = False
-
-    # ── I/O contract check ──────────────────────────────────────────
-    contract_errors = _check_io_contracts(files, spec)
-    if contract_errors:
-        logger.warning("Builder: %d I/O contract issues: %s", len(contract_errors), contract_errors)
-        errors.extend(contract_errors)
-        passed = False
-
-    # ── Persist to disk for download ────────────────────────────────
     if state.get("session_id"):
         _persist_to_disk(state["session_id"], files)
 
     return {
         "generated_code": CodeBundle(
             files=files,
-            framework=spec.metadata.framework_target,
+            framework=framework,
             dependencies=deps,
             validation_passed=passed,
-            validation_errors=errors,
+            validation_errors=error_strings,
         ),
+        "build_attempts": state.get("build_attempts", 0) + 1,
+        "repair_history": repair_history,
     }
 
 
-# ── Code Generation ──────────────────────────────────────────────────
+def _plan_build(llm, spec, tool_templates, failure_feedback):
+    user_parts = [
+        "## AgentSpec\n\n" + spec.model_dump_json(indent=2),
+        "\n\n## Available Tool Templates\n\n"
+        + json.dumps(
+            {k: {"description": v.get("description"), "accepts": v.get("accepts"),
+                 "outputs": v.get("outputs")}
+             for k, v in tool_templates.items()},
+            indent=2,
+        ),
+    ]
+    if failure_feedback:
+        user_parts.append("\n\n## Previous Failures\n\n" + json.dumps(failure_feedback, indent=2))
+
+    raw = llm.call(
+        agent_name=AGENT_NAME,
+        system_prompt=PLAN_SYSTEM,
+        user_prompt="\n".join(user_parts),
+        json_mode=True,
+        temperature=0.1,
+    )
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.warning("Builder: plan LLM returned invalid JSON, using empty plan: %s", e)
+        return {"files": [], "tool_functions": [], "agent_task_map": [], "kickoff_inputs": {}}
 
 
-def _generate_code(
-    llm: LLMService,
-    spec: AgentSpec,
-    tool_templates: dict[str, dict],
-    failure_feedback: list[dict] | None,
-) -> dict[str, str]:
-    """Single LLM call to produce all project files."""
-    if spec.metadata.framework_target == "crewai":
-        system = CREWAI_SYSTEM
-    else:
-        system = LANGGRAPH_SYSTEM
+def _generate_code(llm, spec, tool_templates, plan, failure_feedback):
+    system = CREWAI_SYSTEM if spec.metadata.framework_target == "crewai" else LANGGRAPH_SYSTEM
 
     if failure_feedback:
-        system += REBUILD_ADDENDUM.format(
-            failure_traces=json.dumps(failure_feedback, indent=2)
+        system += (
+            "\n\n## PREVIOUS BUILD FAILED — FIX THESE\n\n"
+            + json.dumps(failure_feedback, indent=2)
         )
 
     user_parts = [
         "## AgentSpec\n\n" + spec.model_dump_json(indent=2),
-        "\n\n## Tool Code Templates\n\n" + json.dumps(tool_templates, indent=2),
+        "\n\n## Build Plan (code MUST conform to this exactly)\n\n"
+        + json.dumps(plan, indent=2),
+        "\n\n## Tool Code Templates (adapt — never rewrite logic)\n\n"
+        + json.dumps(tool_templates, indent=2),
+        "\n\n## Sample Input\n\n" + json.dumps(spec.sample_input, indent=2, default=str),
     ]
 
     response = llm.call(
@@ -312,12 +352,11 @@ def _generate_code(
         json_mode=True,
         temperature=0.1,
     )
-
     try:
         data = json.loads(response)
     except json.JSONDecodeError as e:
-        logger.error("Builder: invalid JSON from LLM: %s", e)
-        raise ValueError(f"Builder returned invalid JSON: {e}") from e
+        logger.error("Builder: invalid JSON from generation pass: %s", e)
+        raise ValueError(f"Builder generation pass returned invalid JSON: {e}") from e
 
     if not isinstance(data, dict):
         raise ValueError("Builder did not return a filename→code mapping")
@@ -325,16 +364,45 @@ def _generate_code(
     return {k: v for k, v in data.items() if isinstance(v, str)}
 
 
-# ── Tool Template Retrieval ──────────────────────────────────────────
+def _repair_code(llm, files, errors, spec, plan):
+    user_parts = [
+        "## Current Files\n\n" + json.dumps(files, indent=2),
+        "\n\n## Validator Errors (fix every one)\n\n" + json.dumps(errors, indent=2),
+        "\n\n## Spec\n\n" + spec.model_dump_json(indent=2),
+        "\n\n## Plan\n\n" + json.dumps(plan, indent=2),
+    ]
+    response = llm.call(
+        agent_name=AGENT_NAME,
+        system_prompt=REPAIR_SYSTEM,
+        user_prompt="\n".join(user_parts),
+        json_mode=True,
+        temperature=0.05,
+    )
+    try:
+        data = json.loads(response)
+    except json.JSONDecodeError as e:
+        logger.error("Builder: repair LLM returned invalid JSON: %s", e)
+        return files
+
+    if not isinstance(data, dict):
+        return files
+
+    merged = dict(files)
+    for k, v in data.items():
+        if isinstance(v, str):
+            merged[k] = v
+    return merged
 
 
-def _get_tool_templates(
-    chroma: ChromaService, spec: AgentSpec
-) -> dict[str, dict]:
-    """Look up code_templates for every tool referenced in the spec."""
-    templates: dict[str, dict] = {}
+def _inject_sample_data(files, spec):
+    if spec.sample_input:
+        files["sample_data.json"] = json.dumps(spec.sample_input, indent=2, default=str)
+
+
+def _get_tool_templates(chroma, spec):
+    templates = {}
     for tool_ref in spec.tools:
-        tool: ToolSchema | None = chroma.get_tool_by_id(tool_ref.library_ref)
+        tool = chroma.get_tool_by_id(tool_ref.library_ref)
         if tool:
             templates[tool_ref.library_ref] = {
                 "id": tool.id,
@@ -346,146 +414,23 @@ def _get_tool_templates(
                 "outputs": tool.outputs,
             }
         else:
-            logger.warning(
-                "Builder: tool '%s' not found in library", tool_ref.library_ref
-            )
+            logger.warning("Builder: tool '%s' not found in library", tool_ref.library_ref)
     return templates
 
 
-# ── Validation ────────────────────────────────────────────────────────
-
-
-def _validate_syntax(files: dict[str, str]) -> tuple[bool, list[str]]:
-    """py_compile every .py file; return (all_passed, error_list)."""
-    errors: list[str] = []
-    for fname, content in files.items():
-        if not fname.endswith(".py"):
-            continue
-        tmp = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                suffix=".py", mode="w", delete=False
-            ) as f:
-                f.write(content)
-                f.flush()
-                tmp = Path(f.name)
-            py_compile.compile(str(tmp), doraise=True)
-        except py_compile.PyCompileError as e:
-            errors.append(f"{fname}: {e}")
-        finally:
-            if tmp:
-                tmp.unlink(missing_ok=True)
-    return len(errors) == 0, errors
-
-
-# ── Dependency Collection ─────────────────────────────────────────────
-
-
-def _collect_dependencies(
-    spec: AgentSpec, tool_templates: dict[str, dict]
-) -> list[str]:
-    """Merge framework deps + tool deps into one list."""
-    deps: set[str] = set()
-
+def _collect_dependencies(spec, tool_templates):
+    deps = set()
     if spec.metadata.framework_target == "crewai":
-        deps.add("crewai")
+        deps.update(["crewai", "python-dotenv"])
     else:
-        deps.update(["langgraph", "langchain-core"])
-
+        deps.update(["langgraph", "langchain-core", "langchain-openai", "python-dotenv"])
     for tmpl in tool_templates.values():
         for d in tmpl.get("dependencies", []):
             deps.add(d)
-
     return sorted(deps)
 
 
-# ── Import Resolution Check ──────────────────────────────────────────
-
-# Packages provided by these pip names (simplified mapping)
-_PIP_TO_MODULES: dict[str, set[str]] = {
-    "crewai": {"crewai"},
-    "langgraph": {"langgraph"},
-    "langchain-core": {"langchain_core", "langchain"},
-    "openai": {"openai"},
-    "requests": {"requests"},
-    "pandas": {"pandas"},
-    "pydantic": {"pydantic"},
-    "beautifulsoup4": {"bs4"},
-    "pypdf": {"pypdf"},
-}
-
-import sys as _sys
-
-_STDLIB_MODULES = set(_sys.stdlib_module_names) if hasattr(_sys, "stdlib_module_names") else set()
-
-
-def _check_imports(files: dict[str, str], deps: list[str]) -> list[str]:
-    """Check that every import in .py files is resolvable against deps + stdlib + local files."""
-    import re
-
-    # Build set of available top-level modules
-    available: set[str] = set(_STDLIB_MODULES)
-    # Local modules from generated files
-    for fname in files:
-        if fname.endswith(".py"):
-            available.add(fname.removesuffix(".py"))
-    # Modules from pip dependencies
-    for dep in deps:
-        if dep in _PIP_TO_MODULES:
-            available.update(_PIP_TO_MODULES[dep])
-        else:
-            available.add(dep.replace("-", "_"))
-
-    errors: list[str] = []
-    import_re = re.compile(r"^\s*(?:import|from)\s+([a-zA-Z_][a-zA-Z0-9_]*)")
-
-    for fname, content in files.items():
-        if not fname.endswith(".py"):
-            continue
-        for lineno, line in enumerate(content.splitlines(), 1):
-            m = import_re.match(line)
-            if m:
-                top_module = m.group(1)
-                if top_module not in available:
-                    errors.append(f"{fname}:{lineno}: unresolved import '{top_module}'")
-    return errors
-
-
-def _check_io_contracts(files: dict[str, str], spec) -> list[str]:
-    """Check that generated agent functions reference fields from the spec's I/O contracts."""
-    errors: list[str] = []
-    if not hasattr(spec, "io_contracts") or not spec.io_contracts:
-        return errors
-
-    # Collect all field names mentioned in io_contracts
-    contract_fields: set[str] = set()
-    for contract in spec.io_contracts:
-        for f in getattr(contract, "input_fields", []):
-            contract_fields.add(f if isinstance(f, str) else str(f))
-        for f in getattr(contract, "output_fields", []):
-            contract_fields.add(f if isinstance(f, str) else str(f))
-
-    if not contract_fields:
-        return errors
-
-    # Check agents.py (where agent functions live) references contract fields
-    agents_code = files.get("agents.py", "")
-    if agents_code:
-        missing = [f for f in contract_fields if f not in agents_code]
-        if missing:
-            errors.append(
-                f"agents.py: I/O contract fields not found in code: {', '.join(sorted(missing))}"
-            )
-    return errors
-
-
-# ── Disk Persistence ──────────────────────────────────────────────────
-
-
-def _persist_to_disk(session_id: str, files: dict[str, str]) -> None:
-    """Write generated files to disk so the download endpoint can serve them."""
-    from app.config import settings
-
+def _persist_to_disk(session_id, files):
     session_dir = Path(settings.generated_agents_dir) / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
     for fname, content in files.items():

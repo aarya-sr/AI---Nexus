@@ -11,6 +11,8 @@ class SpecMetadata(BaseModel):
     framework_target: Literal["crewai", "langgraph"]
     decision_rationale: str | None = None
     created_from_pattern: str | None = None
+    pipeline_input_schema: "IOSchema | None" = None
+    pipeline_output_schema: "IOSchema | None" = None
 
 
 class AgentDef(BaseModel):
@@ -95,3 +97,7 @@ class AgentSpec(BaseModel):
     execution_flow: ExecutionFlow
     error_handling: list[ErrorHandler] = []
     io_contracts: list[IOContract] = []
+    sample_input: dict = {}
+
+
+SpecMetadata.model_rebuild()

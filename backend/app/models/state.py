@@ -39,6 +39,8 @@ class FrankensteinState(TypedDict, total=False):
     test_results: TestReport
     failure_traces: list[FailureTrace]
     build_iteration: int
+    build_attempts: int
+    repair_history: list[dict]
 
     # Stage 6: Learning
     build_outcome: BuildOutcome

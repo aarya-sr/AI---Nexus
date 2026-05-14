@@ -139,6 +139,7 @@ def learner_agent(
 
     # ── 4. Store in Chroma ───────────────────────────────────────────
     _store_learnings(chroma, outcome, requirements)
+    _store_repair_patterns(chroma, state, outcome)
     logger.info(
         "Learner: stored outcome '%s' for domain '%s'",
         outcome_status,
@@ -218,6 +219,14 @@ def _store_learnings(
         "outcome": outcome.outcome,
         "tools_used": json.dumps(outcome.tools_used),
         "iterations": outcome.iterations_needed,
+        "pipeline_input_schema": json.dumps(
+            outcome.spec_snapshot.metadata.pipeline_input_schema.model_dump()
+            if outcome.spec_snapshot.metadata.pipeline_input_schema else {}
+        ),
+        "sample_input": json.dumps(
+            outcome.spec_snapshot.sample_input
+            if getattr(outcome.spec_snapshot, "sample_input", None) else {}
+        ),
     }
     chroma.store_spec_pattern(
         spec_id=build_id,
@@ -273,3 +282,37 @@ def _store_learnings(
         len(outcome.lessons_learned),
         build_id,
     )
+
+
+def _store_repair_patterns(
+    chroma: ChromaService, state: FrankensteinState, outcome: BuildOutcome
+) -> None:
+    """Persist Builder repair history as RAG hints for future builds."""
+    repair_history = state.get("repair_history", [])
+    if not repair_history:
+        return
+    build_id = f"build_{outcome.requirements_hash}"
+    stored = 0
+    for i, entry in enumerate(repair_history):
+        errors = entry.get("errors", [])
+        fix_summary = entry.get("fix_summary") or entry.get("notes") or "applied LLM repair"
+        for j, err in enumerate(errors):
+            err_code = err.get("code", "UNKNOWN")
+            err_msg = err.get("message", "")
+            try:
+                chroma.store_repair_pattern(
+                    pattern_id=f"{build_id}_rep_{i}_{j}_{uuid.uuid4().hex[:4]}",
+                    error_text=f"[{err_code}] {err_msg}",
+                    fix_text=str(fix_summary),
+                    metadata={
+                        "code": err_code,
+                        "framework": outcome.framework_used,
+                        "domain": outcome.domain,
+                        "build_outcome": outcome.outcome,
+                    },
+                )
+                stored += 1
+            except Exception as e:
+                logger.warning("Learner: repair pattern store failed: %s", e)
+    if stored:
+        logger.info("Learner: stored %d repair patterns", stored)

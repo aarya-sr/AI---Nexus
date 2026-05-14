@@ -82,26 +82,36 @@ def route_after_test(state: FrankensteinState) -> str:
         logger.info("Routing: tester → learner (all passed)")
         return "learner"
 
-    iteration = state.get("build_iteration", 0)
-    max_iter = settings.max_build_iterations
-
-    if iteration >= max_iter:
-        logger.info(
-            "Routing: tester → learner (max iterations %d reached)",
-            max_iter,
-        )
-        return "learner"
-
     # Check failure traces for root cause level
     failure_traces = state.get("failure_traces", [])
     has_spec_failure = any(t.root_cause_level == "spec" for t in failure_traces)
 
+    spec_iter = state.get("spec_iteration", 0)
+    build_iter = state.get("build_iteration", 0)
+    max_spec = settings.max_spec_iterations
+    max_build = settings.max_build_iterations
+
     if has_spec_failure:
-        # Spec-level failures route to learner with partial_success (not back to architect for MVP)
-        logger.info("Routing: tester → learner (spec-level failure, partial success)")
+        if spec_iter < max_spec:
+            logger.info(
+                "Routing: tester → architect (spec-level failure, spec_iter=%d/%d)",
+                spec_iter, max_spec,
+            )
+            return "architect"
+        logger.warning(
+            "Routing: tester → learner (spec-level failure but spec_iter cap %d reached)",
+            max_spec,
+        )
         return "learner"
 
-    logger.info("Routing: tester → builder (code-level fix)")
+    if build_iter >= max_build:
+        logger.warning(
+            "Routing: tester → learner (build_iter cap %d reached, tests still failing)",
+            max_build,
+        )
+        return "learner"
+
+    logger.info("Routing: tester → builder (code-level fix, build_iter=%d/%d)", build_iter, max_build)
     return "builder"
 
 
@@ -146,7 +156,7 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         "tester",
         route_after_test,
-        {"learner": "learner", "builder": "builder"},
+        {"learner": "learner", "builder": "builder", "architect": "architect"},
     )
 
     return graph

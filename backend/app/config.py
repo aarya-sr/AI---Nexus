@@ -17,11 +17,16 @@ class Settings(BaseSettings):
 
     # Pipeline constants
     max_spec_iterations: int = 3
-    max_build_iterations: int = 3
+    max_build_iterations: int = 10
+    max_builder_repair_iterations: int = 2
     max_elicitor_rounds: int = 3
     completeness_threshold: float = 0.7
     docker_timeout: int = 60
     pipeline_timeout: int = 300
+
+    # Tester runtime
+    tester_live_execution: bool = True
+    tester_test_model: str = "openai/gpt-4o-mini"
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

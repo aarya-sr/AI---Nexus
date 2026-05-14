@@ -34,7 +34,7 @@ AI agent pipelines from natural language requirements.
 
 Transform the provided RequirementsDoc into a complete AgentSpec.
 
-## Your 7-Step Process
+## Your 8-Step Process
 
 ### 1. TASK DECOMPOSITION
 Break requirements.process_steps into discrete computational tasks.
@@ -79,6 +79,26 @@ Never use "skip" on agents that have downstream dependents.
 ### 7. I/O CONTRACTS
 Per agent: input_schema + output_schema with typed, named fields.
 Every required output of agent A must appear in the input_schema of downstream agent B.
+Each task in the first agent's input_schema MUST be in the pipeline_input_schema (step 8).
+
+### 8. PIPELINE INPUT/OUTPUT CONTRACT (CRITICAL)
+This is how data ENTERS and LEAVES the entire pipeline. Without this, the generated
+code has nothing to wire `crew.kickoff(inputs=...)` or `graph.invoke(...)` to.
+
+  - metadata.pipeline_input_schema: SchemaField list describing the shape the very
+    first agent receives. EVERY required field of the first agent's input_schema
+    MUST appear here (subset rule). Use the requirements.sample_input_example as
+    a source of truth for field names.
+  - metadata.pipeline_output_schema: SchemaField list describing the final return
+    shape (typically matches the last agent's output_schema).
+  - sample_input: a concrete dict, keys matching pipeline_input_schema field names.
+    Pull from requirements.sample_input_example if present; otherwise synthesize a
+    realistic example from the domain. NEVER leave this empty — the test harness
+    uses it to actually run the pipeline.
+
+Additionally, write each agent's task description so it references its input fields
+by their EXACT field names (e.g. "Process the {application_data} to extract..."),
+because the Builder will turn those into CrewAI template variables.
 
 ## Output — strict JSON
 
@@ -90,7 +110,9 @@ Return ONE JSON object matching this exact schema (no extra keys):
     "domain": "matches requirements.domain",
     "framework_target": "crewai" or "langgraph",
     "decision_rationale": "2-4 sentences: why this framework, why these tools, why this agent grouping",
-    "created_from_pattern": null
+    "created_from_pattern": null,
+    "pipeline_input_schema": {"fields": [{"name": "f", "type": "string", "required": true}]},
+    "pipeline_output_schema": {"fields": [{"name": "f", "type": "string", "required": true}]}
   },
   "agents": [
     {
@@ -131,7 +153,8 @@ Return ONE JSON object matching this exact schema (no extra keys):
       "input_schema": {"fields": [{"name": "f", "type": "string", "required": true}]},
       "output_schema": {"fields": [{"name": "f", "type": "string", "required": true}]}
     }
-  ]
+  ],
+  "sample_input": {"<field>": "<concrete value matching pipeline_input_schema>"}
 }
 
 CRITICAL RULES:
@@ -139,7 +162,10 @@ CRITICAL RULES:
 - tools[].library_ref MUST match an ID from the provided Tool Schema Library
 - agents[].tools MUST reference tools[].id values
 - execution_flow.graph is REQUIRED when pattern is "graph", null otherwise
-- For "graph" edges, use "from_agent" and "to_agent" as the key names"""
+- For "graph" edges, use "from_agent" and "to_agent" as the key names
+- metadata.pipeline_input_schema MUST be populated (non-empty fields list)
+- sample_input MUST be a non-empty dict with keys matching pipeline_input_schema
+- First agent's input_schema fields MUST be a subset of pipeline_input_schema fields"""
 
 SPEC_REVISION_SYSTEM = """\
 You are the Architect agent revising a specification after Critic review.

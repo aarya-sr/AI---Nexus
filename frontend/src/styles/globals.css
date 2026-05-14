@@ -42,7 +42,7 @@
   position: fixed;
   inset: 0;
   background-image:
-    radial-gradient(circle, rgba(184,115,51,0.06) 1px, transparent 1px);
+    radial-gradient(circle, rgba(184,115,51,0.03) 1px, transparent 1px);
   background-size: 40px 40px;
   z-index: -2;
   pointer-events: none;
@@ -53,7 +53,7 @@
   content: '';
   position: fixed;
   inset: 0;
-  background: radial-gradient(ellipse at center, transparent 50%, rgba(10,13,8,0.4) 100%);
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(10,13,8,0.2) 100%);
   z-index: -1;
   pointer-events: none;
 }

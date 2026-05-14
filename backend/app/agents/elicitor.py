@@ -25,7 +25,7 @@ from app.services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
-CATEGORY_PRIORITY = ["Input/Output", "Process", "Data", "Edge Cases", "Quality Bar"]
+CATEGORY_PRIORITY = ["Input/Output", "Process", "Data", "Sample Data", "Edge Cases", "Quality Bar"]
 MIN_ELICITOR_ROUNDS = 2
 ELICITOR_COMPLETENESS_THRESHOLD = 0.85
 
@@ -33,7 +33,7 @@ ELICITOR_COMPLETENESS_THRESHOLD = 0.85
 
 GAP_ANALYSIS_SYSTEM = """\
 You are an expert requirements analyst for AI agent systems. Your job is to evaluate how \
-completely a user's natural language description addresses 5 key categories needed to build \
+completely a user's natural language description addresses 6 key categories needed to build \
 a working AI agent pipeline.
 
 Categories and their required fields:
@@ -44,9 +44,12 @@ output_format, output_destination
 transformation_logic, sequencing_rules
 3. Data: data_volume_estimate, data_frequency, data_sensitivity, \
 external_data_sources, data_schema_known
-4. Edge Cases: known_failure_modes, missing_data_handling, invalid_input_handling, \
+4. Sample Data: sample_input_example (a concrete example record/dict the pipeline will \
+receive), sample_output_example (a concrete example of what the pipeline returns), \
+input_entry_mechanism (how data enters: file path, CLI arg, API call, inline dict)
+5. Edge Cases: known_failure_modes, missing_data_handling, invalid_input_handling, \
 timeout_behavior, partial_success_handling
-5. Quality Bar: accuracy_requirement, latency_requirement, output_validation_method, \
+6. Quality Bar: accuracy_requirement, latency_requirement, output_validation_method, \
 success_criteria, acceptable_error_rate
 
 Scoring rules:
@@ -158,6 +161,11 @@ Rules:
 - quality_criteria must be measurable
 - constraints are hard limits (budget, time, technical)
 - assumptions are gaps that could not be resolved after {max_rounds} Q&A rounds
+- sample_input_example: if the user gave a concrete example (json/dict-like), parse it \
+into a dict. If they only described the shape, synthesize a realistic example matching \
+the described fields. Use null only if there is truly zero information.
+- sample_output_example: same rule as above, for the expected output.
+- input_entry_mechanism: one of "file_path", "cli_arg", "api_call", "inline_dict", or null.
 
 Respond ONLY with valid JSON matching this exact schema:
 {{
@@ -183,7 +191,10 @@ Respond ONLY with valid JSON matching this exact schema:
     {{"criterion": "<str>", "validation_method": "<str>"}}
   ],
   "constraints": ["<str>", ...],
-  "assumptions": ["<str>", ...]
+  "assumptions": ["<str>", ...],
+  "sample_input_example": {{"<field>": "<value>", ...}} | null,
+  "sample_output_example": {{"<field>": "<value>", ...}} | null,
+  "input_entry_mechanism": "<file_path|cli_arg|api_call|inline_dict>" | null
 }}"""
 
 

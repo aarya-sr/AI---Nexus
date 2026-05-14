@@ -17,9 +17,11 @@ import json
 import logging
 from collections import defaultdict
 
+from app.agents._validation import PYDANTIC_RESERVED
 from app.models.critique import CritiqueReport, Finding
 from app.models.spec import AgentSpec, GraphEdge
 from app.models.state import FrankensteinState
+from app.services.chroma_service import ChromaService
 from app.services.llm_service import LLMService
 
 logger = logging.getLogger(__name__)
@@ -75,12 +77,16 @@ def critic_agent(
     state: FrankensteinState,
     *,
     llm: LLMService | None = None,
+    chroma: ChromaService | None = None,
 ) -> dict:
-    """Critic node — runs 6 attack vectors against the spec."""
+    """Critic node — runs 9 attack vectors against the spec."""
+    from app.services.chroma_service import ChromaService as _CS
     from app.services.llm_service import LLMService as _LS
 
     if llm is None:
         llm = _LS()
+    if chroma is None:
+        chroma = _CS()
 
     spec: AgentSpec = state["spec"]
     iteration = state.get("spec_iteration", 1)
@@ -93,6 +99,9 @@ def critic_agent(
     findings.extend(_check_dependency_completeness(spec))
     findings.extend(_check_dead_ends(spec))
     findings.extend(_check_resource_conflicts(spec))
+    findings.extend(_check_pipeline_input_wirability(spec))
+    findings.extend(_check_tool_template_availability(spec, chroma))
+    findings.extend(_check_tool_param_safety(spec, chroma))
 
     prog_count = len(findings)
     logger.info("Critic: %d findings from programmatic checks", prog_count)
@@ -502,3 +511,160 @@ def _semantic_review(
                 f"{len(programmatic_findings)} programmatic findings stand."
             ),
         }
+
+
+# ── Vector 7: Pipeline Input Wirability ───────────────────────────────
+
+
+def _check_pipeline_input_wirability(spec: AgentSpec) -> list[Finding]:
+    """The first agent's required input_schema fields MUST be a subset of pipeline_input_schema.
+
+    Without this, the Builder has no anchor for `crew.kickoff(inputs=...)` /
+    `graph.invoke(input)`.
+    """
+    findings: list[Finding] = []
+    pis = spec.metadata.pipeline_input_schema
+
+    if pis is None or not pis.fields:
+        findings.append(Finding(
+            vector="pipeline_input_wirability",
+            severity="critical",
+            description="metadata.pipeline_input_schema is missing or empty",
+            location="metadata.pipeline_input_schema",
+            evidence="No fields declared as pipeline entry points",
+            suggested_fix="Add pipeline_input_schema describing the dict shape that "
+                          "crew.kickoff(inputs=...) / graph.invoke(...) will receive",
+        ))
+        return findings
+
+    if not spec.sample_input:
+        findings.append(Finding(
+            vector="pipeline_input_wirability",
+            severity="critical",
+            description="spec.sample_input is empty",
+            location="sample_input",
+            evidence="No concrete sample input provided for testing",
+            suggested_fix="Populate sample_input with a realistic dict matching "
+                          "pipeline_input_schema",
+        ))
+    else:
+        pis_names = {f.name for f in pis.fields}
+        sample_names = set(spec.sample_input.keys())
+        missing_in_sample = {f.name for f in pis.fields if f.required} - sample_names
+        if missing_in_sample:
+            findings.append(Finding(
+                vector="pipeline_input_wirability",
+                severity="critical",
+                description=f"sample_input is missing required pipeline fields: {sorted(missing_in_sample)}",
+                location="sample_input",
+                evidence=f"pipeline_input_schema requires {sorted(pis_names)}, sample has {sorted(sample_names)}",
+                suggested_fix="Add the missing keys to sample_input with concrete example values",
+            ))
+
+    if not spec.agents:
+        return findings
+
+    first_agent = spec.agents[0]
+    contracts = {c.agent_id: c for c in spec.io_contracts}
+    first_contract = contracts.get(first_agent.id)
+    if not first_contract:
+        return findings
+
+    pis_names = {f.name for f in pis.fields}
+    required_inputs = {f.name for f in first_contract.input_schema.fields if f.required}
+    missing = required_inputs - pis_names
+    if missing:
+        findings.append(Finding(
+            vector="pipeline_input_wirability",
+            severity="critical",
+            description=(
+                f"First agent '{first_agent.id}' requires fields {sorted(missing)} that "
+                f"are NOT in pipeline_input_schema"
+            ),
+            location=f"agents[0]={first_agent.id}.input_schema",
+            evidence=f"pipeline_input_schema fields: {sorted(pis_names)}",
+            suggested_fix=f"Either add {sorted(missing)} to pipeline_input_schema or "
+                          f"remove from first agent's input_schema",
+        ))
+
+    return findings
+
+
+# ── Vector 8: Tool Template Availability ──────────────────────────────
+
+
+def _check_tool_template_availability(spec: AgentSpec, chroma: ChromaService) -> list[Finding]:
+    """Every tools[].library_ref must resolve to a tool with a non-empty code_template.
+
+    Builder can't write working code if there's no template to start from.
+    """
+    findings: list[Finding] = []
+    for tool in spec.tools:
+        try:
+            schema = chroma.get_tool_by_id(tool.library_ref)
+        except Exception as e:
+            findings.append(Finding(
+                vector="tool_template_availability",
+                severity="critical",
+                description=f"Tool '{tool.id}' references library_ref '{tool.library_ref}' which is not in the library",
+                location=f"tools[id={tool.id}]",
+                evidence=str(e),
+                suggested_fix="Choose a library_ref from the available Tool Schema Library, "
+                              "or remove this tool",
+            ))
+            continue
+        if not schema or not getattr(schema, "code_template", None):
+            findings.append(Finding(
+                vector="tool_template_availability",
+                severity="warning",
+                description=f"Tool '{tool.library_ref}' has no code_template — Builder will "
+                            f"need to synthesize it from scratch",
+                location=f"tools[id={tool.id}]",
+                evidence=f"Library entry exists but code_template is empty",
+                suggested_fix="Prefer tools with code_template in the library, or accept "
+                              "higher build risk",
+            ))
+    return findings
+
+
+# ── Vector 9: Tool Param Safety ───────────────────────────────────────
+
+
+def _check_tool_param_safety(spec: AgentSpec, chroma: ChromaService) -> list[Finding]:
+    """Inspect each tool's code_template for params that shadow pydantic/CrewAI reserved names.
+
+    Caught examples: `schema`, `dict`, `json`, `model_*`. These shadow `BaseModel`
+    attributes that CrewAI's tool wrapper relies on.
+    """
+    import re
+    findings: list[Finding] = []
+    for tool in spec.tools:
+        try:
+            schema = chroma.get_tool_by_id(tool.library_ref)
+        except Exception:
+            continue
+        template = getattr(schema, "code_template", None) if schema else None
+        if not template:
+            continue
+        # Naive scan for `def fn(params)`
+        for match in re.finditer(r"def\s+(\w+)\s*\(([^)]*)\)", template):
+            fn_name = match.group(1)
+            params_str = match.group(2)
+            for part in params_str.split(","):
+                name = part.strip().split(":")[0].split("=")[0].strip()
+                if name in {"self", "cls", "", "*args", "**kwargs"} or name.startswith("*"):
+                    continue
+                if name in PYDANTIC_RESERVED:
+                    findings.append(Finding(
+                        vector="tool_param_safety",
+                        severity="warning",
+                        description=(
+                            f"Tool '{tool.library_ref}' function '{fn_name}' has param '{name}' "
+                            f"that shadows a pydantic BaseModel attribute"
+                        ),
+                        location=f"tools[id={tool.id}]",
+                        evidence=f"def {fn_name}({params_str})",
+                        suggested_fix=f"Builder must rename '{name}' to e.g. '{name}_value' "
+                                      f"when generating code, or use single 'data: dict' convention",
+                    ))
+    return findings

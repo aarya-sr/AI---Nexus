@@ -38,6 +38,9 @@ class RequirementsDoc(BaseModel):
     quality_criteria: list[QualityCriterion]
     constraints: list[str] = []
     assumptions: list[str] = []
+    sample_input_example: dict | None = None
+    sample_output_example: dict | None = None
+    input_entry_mechanism: str | None = None
 
 
 # ── Internal Elicitor models (not written to pipeline state) ─────────

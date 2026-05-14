@@ -8,7 +8,7 @@ from app.models.tools import ToolSchema
 
 logger = logging.getLogger(__name__)
 
-COLLECTIONS = ["tool_schemas", "spec_patterns", "anti_patterns", "domain_insights"]
+COLLECTIONS = ["tool_schemas", "spec_patterns", "anti_patterns", "domain_insights", "builder_repair_patterns"]
 
 
 class ChromaService:
@@ -153,6 +153,23 @@ class ChromaService:
     def store_domain_insight(self, insight_id: str, insight: str, metadata: dict) -> None:
         col = self.collection("domain_insights")
         col.upsert(ids=[insight_id], documents=[insight], metadatas=[metadata])
+
+    # ── Builder Repair Patterns ──────────────────────────────────────
+
+    def store_repair_pattern(
+        self, pattern_id: str, error_text: str, fix_text: str, metadata: dict
+    ) -> None:
+        """Persist a (validator-error → applied-fix) pair for future Builder RAG."""
+        col = self.collection("builder_repair_patterns")
+        doc = f"ERROR: {error_text}\nFIX: {fix_text}"
+        col.upsert(ids=[pattern_id], documents=[doc], metadatas=[metadata])
+
+    def find_similar_repair_patterns(self, error_text: str, n_results: int = 3) -> list[dict]:
+        col = self.collection("builder_repair_patterns")
+        if col.count() == 0:
+            return []
+        results = col.query(query_texts=[error_text], n_results=n_results)
+        return self._flatten_results(results)
 
     # ── Tool Compatibility Updates ───────────────────────────────────
 

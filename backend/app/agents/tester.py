@@ -1,21 +1,25 @@
-"""Tester agent — validates generated code and traces failures.
+"""Tester agent — runs generated code against real LLM, traces failures.
 
-Model: gpt-4o-mini
-Purpose: Generate test cases from spec contracts, validate code, trace
-         failures back to spec-level or code-level root causes.
-Process: Generate tests → static validation → Docker execution → failure tracing.
-
-Docker execution runs the generated code in a sandboxed container when Docker
-is available. Falls back to static-only validation when Docker is unavailable.
+Hardened pipeline:
+  1. Generate test cases (LLM, for the report only — actual execution uses sample_input).
+  2. Static validation via _validation.run_all (same checks the Builder uses).
+  3. LIVE execution: write sample_data.json + .env into the runner image,
+     inject OPENROUTER_API_KEY → OPENAI_API_KEY, enable network, run main.py.
+  4. Output validation: parse stdout JSON, flag known failure signatures.
+  5. Rule-based failure classification (regex) for common error patterns;
+     LLM only handles what the rules don't catch.
 """
 
 import json
 import logging
-import py_compile
+import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
 
+from app.agents import _validation
+from app.config import settings
 from app.models.code import CodeBundle
 from app.models.spec import AgentSpec
 from app.models.state import FrankensteinState
@@ -27,78 +31,29 @@ logger = logging.getLogger(__name__)
 
 AGENT_NAME = "tester"
 
-# ── System Prompts ────────────────────────────────────────────────────
 
 TEST_GENERATION_SYSTEM = """\
-You are the Tester agent generating test cases for an AI agent pipeline.
-
-Given the AgentSpec (with io_contracts) and generated code, produce test cases
-that would verify correctness if the code were executed.
-
-For each test case:
-- name: descriptive snake_case (e.g. "test_bank_statement_parsing")
-- description: what the test verifies
-- input_data: synthetic test input matching the pipeline's entry point schema
-- expected_output_schema: JSON schema the output must conform to
-- quality_checks: human-readable assertions (e.g. "risk_score between 0 and 1")
-- timeout: seconds (default 60)
-
-Focus on:
-1. Happy path — standard input → expected output shape
-2. Required fields — every output_schema required field is present
-3. Edge cases from requirements — if any were specified
-4. Contract compliance — output types match declared schemas
-
-Return JSON: {"test_cases": [...]}"""
+You are the Tester generating test cases. Return JSON: {"test_cases": [...]}
+Each: name, description, input_data, expected_output_schema, quality_checks, timeout.
+"""
 
 FAILURE_ANALYSIS_SYSTEM = """\
-You are the Tester agent analysing failures in generated code.
-
-Given:
-1. AgentSpec
-2. Generated code files
-3. Validation errors found
+You are the Tester analysing failures the rule-based classifier could not categorize.
 
 For each failure, determine:
-
-- test_name: which check failed
+- test_name
 - error_type: crash | wrong_output | missing_field | quality_fail
-- raw_error: the actual error message
-- failing_agent: which agent in the generated pipeline is responsible
-- root_cause_level:
-    "code"  — implementation bug (syntax, logic, wrong function signature)
-              → loops back to Builder
-    "spec"  — design flaw (wrong tool, missing agent, schema mismatch)
-              → loops back to Architect
-- root_cause_analysis: 1-2 sentence explanation
-- spec_decision_responsible: which spec field/decision caused the issue
-- suggested_fix: specific, actionable fix
+- raw_error
+- failing_agent
+- root_cause_level: "code" (loop to Builder) | "spec" (loop to Architect)
+- root_cause_analysis (1-2 sentences)
+- spec_decision_responsible
+- suggested_fix
 
 Return JSON: {"failure_traces": [...]}"""
 
-STATIC_ANALYSIS_SYSTEM = """\
-You are analysing generated code for an AI agent pipeline.
 
-Check the code files against the spec for these issues:
-1. Missing imports — are all used modules imported?
-2. Function signature mismatches — do agent functions accept/return the right types?
-3. Tool wiring — is every tool used by its assigned agent?
-4. Contract compliance — does each agent's return dict match its output_schema?
-5. Entry point — does main.py actually invoke the pipeline correctly?
-
-For each issue found, report:
-{
-  "file": "filename.py",
-  "line_hint": "near which function/class",
-  "severity": "error" | "warning",
-  "description": "what is wrong",
-  "fix": "how to fix it"
-}
-
-Return JSON: {"issues": [...]}"""
-
-
-# ── Agent Entry Point ─────────────────────────────────────────────────
+# ── Public entry point ────────────────────────────────────────────────
 
 
 def tester_agent(
@@ -107,9 +62,7 @@ def tester_agent(
     llm: LLMService | None = None,
     docker: DockerService | None = None,
 ) -> dict:
-    """Tester node — validates generated code, traces failures."""
     from app.services.llm_service import LLMService as _LS
-
     if llm is None:
         llm = _LS()
     if docker is None:
@@ -119,135 +72,63 @@ def tester_agent(
     code: CodeBundle = state["generated_code"]
     logger.info("Tester: validating '%s' (%d files)", spec.metadata.name, len(code.files))
 
-    # ── 1. Generate test cases ───────────────────────────────────────
     test_cases = _generate_test_cases(llm, spec, code)
-    logger.info("Tester: generated %d test cases", len(test_cases))
 
-    # ── 2. Static validation ─────────────────────────────────────────
-    syntax_errors = _check_syntax(code)
-    analysis_issues = _run_static_analysis(llm, spec, code)
-    all_errors = syntax_errors + analysis_issues
+    # Static validation (same as Builder's)
+    static_errors = _validation.run_all(code.files, spec=spec, framework=spec.metadata.framework_target)
+    syntax_errors = [e for e in static_errors if e.get("code") == "SYNTAX_ERROR"]
+    other_static = [e for e in static_errors if e.get("code") != "SYNTAX_ERROR"]
 
-    # ── 3. Code execution (Docker preferred, subprocess fallback) ───
+    # Execute live
     exec_result: ExecutionResult | None = None
     if syntax_errors:
         logger.info("Tester: skipping execution — syntax errors found")
-    elif docker.available and docker.image_exists():
-        logger.info("Tester: running code in Docker sandbox")
-        exec_result = docker.run_code_bundle(code)
-        if exec_result.timed_out:
-            logger.warning("Tester: Docker execution timed out")
-        elif exec_result.exit_code != 0:
-            logger.warning("Tester: Docker execution failed (exit %d)", exec_result.exit_code)
-        else:
-            logger.info("Tester: Docker execution succeeded")
     else:
-        # Subprocess fallback — run entry point directly
-        logger.info("Tester: Docker unavailable — using subprocess fallback")
-        exec_result = _run_subprocess(code)
+        env = _build_env(spec)
+        live = settings.tester_live_execution and bool(os.getenv("OPENROUTER_API_KEY"))
+        if docker.available and docker.image_exists():
+            logger.info("Tester: running in Docker (live=%s, network=%s)", live, live)
+            exec_result = docker.run_code_bundle(
+                code,
+                env=env,
+                network_disabled=not live,
+                timeout=settings.docker_timeout * 2 if live else settings.docker_timeout,
+            )
+        else:
+            logger.info("Tester: Docker unavailable — subprocess fallback (live=%s)", live)
+            exec_result = _run_subprocess(code, env, settings.docker_timeout * 2 if live else settings.docker_timeout)
 
-    # ── 4. Build test report ─────────────────────────────────────────
+    # Build results
     results: list[TestResult] = []
-
-    # Syntax results
+    all_errors: list[dict] = list(other_static)
     failed_files: set[str] = set()
     for err in syntax_errors:
-        failed_files.add(err["file"])
-        results.append(
-            TestResult(
-                test_name=f"syntax_{err['file']}",
-                status="failed",
-                stderr=err["error"],
-                validation_details=f"Syntax error in {err['file']}",
-            )
-        )
+        failed_files.add(err.get("file", ""))
+        all_errors.append(err)
+        results.append(TestResult(
+            test_name=f"syntax_{err.get('file', '?')}",
+            status="failed",
+            stderr=err.get("message", ""),
+            validation_details=err.get("fix", ""),
+        ))
 
-    # Static analysis results
-    for issue in analysis_issues:
-        status = "failed" if issue["severity"] == "error" else "passed"
-        results.append(
-            TestResult(
-                test_name=f"analysis_{issue['file']}_{issue.get('line_hint', 'unknown')}",
-                status=status,
-                stderr=issue.get("description", ""),
-                validation_details=issue.get("fix", ""),
-            )
-        )
+    for issue in other_static:
+        sev = issue.get("severity", "warning")
+        status = "failed" if sev == "error" else "passed"
+        results.append(TestResult(
+            test_name=f"{issue.get('code', 'static')}_{issue.get('file', '?')}",
+            status=status,
+            stderr=issue.get("message", ""),
+            validation_details=issue.get("fix", ""),
+        ))
 
-    # Docker execution results
     if exec_result is not None:
-        if exec_result.timed_out:
-            results.append(
-                TestResult(
-                    test_name="docker_execution",
-                    status="failed",
-                    stderr=exec_result.error,
-                    stdout=exec_result.stdout,
-                    validation_details=f"Execution timed out: {exec_result.error}",
-                )
-            )
-            all_errors.append({
-                "file": code.entry_point,
-                "severity": "error",
-                "error": exec_result.error,
-                "description": "Docker execution timed out",
-                "fix": "Check for infinite loops or long-running operations",
-            })
-        elif exec_result.exit_code != 0:
-            results.append(
-                TestResult(
-                    test_name="docker_execution",
-                    status="failed",
-                    stderr=exec_result.stderr,
-                    stdout=exec_result.stdout,
-                    validation_details=f"Exit code {exec_result.exit_code}: {exec_result.stderr[:500]}",
-                )
-            )
-            all_errors.append({
-                "file": code.entry_point,
-                "severity": "error",
-                "error": exec_result.stderr[:500],
-                "description": f"Runtime error (exit {exec_result.exit_code})",
-                "fix": "Fix the runtime error in the generated code",
-            })
-        elif exec_result.error:
-            results.append(
-                TestResult(
-                    test_name="docker_execution",
-                    status="error",
-                    stderr=exec_result.error,
-                    stdout=exec_result.stdout,
-                    validation_details=f"Docker error: {exec_result.error}",
-                )
-            )
-        else:
-            results.append(
-                TestResult(
-                    test_name="docker_execution",
-                    status="passed",
-                    stdout=exec_result.stdout,
-                    validation_details="Code executed successfully in sandbox",
-                )
-            )
+        _evaluate_execution(exec_result, spec, results, all_errors, code)
 
-    # Passing results for clean .py files
+    # Pass-through for clean files
     for fname in code.files:
         if fname.endswith(".py") and fname not in failed_files:
-            results.append(
-                TestResult(test_name=f"syntax_{fname}", status="passed")
-            )
-
-    # Validation-passed check (from builder)
-    if not code.validation_passed and code.validation_errors:
-        for ve in code.validation_errors:
-            results.append(
-                TestResult(
-                    test_name="builder_validation",
-                    status="failed",
-                    stderr=ve,
-                    validation_details="Builder's own validation flagged this",
-                )
-            )
+            results.append(TestResult(test_name=f"syntax_{fname}", status="passed"))
 
     n_failed = sum(1 for r in results if r.status == "failed")
     n_errors = sum(1 for r in results if r.status == "error")
@@ -262,11 +143,16 @@ def tester_agent(
         results=results,
     )
 
-    # ── 5. Failure tracing ───────────────────────────────────────────
+    # Failure tracing
     failure_traces: list[FailureTrace] = []
     if not all_passed:
-        failure_traces = _trace_failures(llm, spec, code, all_errors)
-        logger.info("Tester: %d failure traces generated", len(failure_traces))
+        # First try rule-based
+        rule_traces, unclassified = _classify_failures_rules(all_errors, exec_result, spec)
+        failure_traces.extend(rule_traces)
+        # LLM handles whatever the rules didn't classify
+        if unclassified:
+            failure_traces.extend(_trace_failures_llm(llm, spec, code, unclassified))
+        logger.info("Tester: %d failure traces (%d rule-based)", len(failure_traces), len(rule_traces))
     else:
         logger.info("Tester: all checks passed")
 
@@ -278,120 +164,229 @@ def tester_agent(
     }
 
 
-# ── Test Case Generation ─────────────────────────────────────────────
+# ── Env injection ─────────────────────────────────────────────────────
 
 
-def _generate_test_cases(
-    llm: LLMService, spec: AgentSpec, code: CodeBundle
-) -> list[TestCase]:
-    """LLM generates test cases from spec contracts."""
-    # Only send a summary of code files (names + first lines) to save tokens
-    code_summary = {}
-    for fname, content in code.files.items():
-        lines = content.split("\n")
-        code_summary[fname] = "\n".join(lines[:30]) + (
-            "\n... (truncated)" if len(lines) > 30 else ""
-        )
-
-    user_msg = (
-        f"## AgentSpec\n\n{spec.model_dump_json(indent=2)}"
-        f"\n\n## Generated Code (summary)\n\n{json.dumps(code_summary, indent=2)}"
-    )
-
-    response = llm.call(
-        agent_name=AGENT_NAME,
-        system_prompt=TEST_GENERATION_SYSTEM,
-        user_prompt=user_msg,
-        json_mode=True,
-        temperature=0.2,
-    )
-
-    try:
-        data = json.loads(response)
-        return [TestCase(**tc) for tc in data.get("test_cases", [])]
-    except (json.JSONDecodeError, Exception) as e:
-        logger.error("Tester: test generation parse failed: %s", e)
-        return []
+def _build_env(spec: AgentSpec) -> dict[str, str]:
+    """OPENROUTER_API_KEY → OPENAI_*, plus test model."""
+    env: dict[str, str] = {}
+    key = os.getenv("OPENROUTER_API_KEY", "")
+    if key:
+        env["OPENAI_API_KEY"] = key
+        env["OPENROUTER_API_KEY"] = key
+        env["OPENAI_BASE_URL"] = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        env["OPENAI_MODEL_NAME"] = settings.tester_test_model
+    return env
 
 
-# ── Syntax Checking ──────────────────────────────────────────────────
+# ── Execution result evaluation ───────────────────────────────────────
 
 
-def _check_syntax(code: CodeBundle) -> list[dict]:
-    """py_compile every .py file."""
-    errors: list[dict] = []
-    for fname, content in code.files.items():
-        if not fname.endswith(".py"):
-            continue
-        tmp = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                suffix=".py", mode="w", delete=False
-            ) as f:
-                f.write(content)
-                f.flush()
-                tmp = Path(f.name)
-            py_compile.compile(str(tmp), doraise=True)
-        except py_compile.PyCompileError as e:
-            errors.append(
-                {
-                    "file": fname,
-                    "severity": "error",
-                    "error": str(e),
-                    "description": f"Syntax error in {fname}",
-                    "fix": "Fix the syntax error",
-                }
-            )
-        finally:
-            if tmp:
-                tmp.unlink(missing_ok=True)
-    return errors
-
-
-# ── Static Analysis (LLM) ────────────────────────────────────────────
-
-
-def _run_static_analysis(
-    llm: LLMService, spec: AgentSpec, code: CodeBundle
-) -> list[dict]:
-    """LLM checks code against spec for structural issues."""
-    user_msg = (
-        f"## AgentSpec\n\n{spec.model_dump_json(indent=2)}"
-        f"\n\n## Generated Code\n\n{json.dumps(code.files, indent=2)}"
-    )
-
-    response = llm.call(
-        agent_name=AGENT_NAME,
-        system_prompt=STATIC_ANALYSIS_SYSTEM,
-        user_prompt=user_msg,
-        json_mode=True,
-        temperature=0.1,
-    )
-
-    try:
-        data = json.loads(response)
-        return data.get("issues", [])
-    except (json.JSONDecodeError, Exception) as e:
-        logger.error("Tester: static analysis parse failed: %s", e)
-        return []
-
-
-# ── Failure Tracing ──────────────────────────────────────────────────
-
-
-def _trace_failures(
-    llm: LLMService,
+def _evaluate_execution(
+    exec_result: ExecutionResult,
     spec: AgentSpec,
+    results: list[TestResult],
+    all_errors: list[dict],
     code: CodeBundle,
+) -> None:
+    """Inspect exec result; append TestResults + error dicts for classifier."""
+    if exec_result.timed_out:
+        results.append(TestResult(
+            test_name="live_execution",
+            status="failed",
+            stderr=exec_result.error,
+            stdout=exec_result.stdout,
+            validation_details=f"Execution timed out: {exec_result.error}",
+        ))
+        all_errors.append({
+            "code": "EXECUTION_TIMEOUT",
+            "file": code.entry_point,
+            "severity": "error",
+            "message": exec_result.error,
+            "fix": "Reduce LLM call count, simplify task descriptions, or raise docker_timeout",
+        })
+        return
+
+    if exec_result.exit_code != 0:
+        results.append(TestResult(
+            test_name="live_execution",
+            status="failed",
+            stderr=exec_result.stderr,
+            stdout=exec_result.stdout,
+            validation_details=f"Exit code {exec_result.exit_code}",
+        ))
+        all_errors.append({
+            "code": "RUNTIME_ERROR",
+            "file": code.entry_point,
+            "severity": "error",
+            "message": exec_result.stderr[-2000:],
+            "stdout": exec_result.stdout[-1000:],
+            "fix": "Inspect traceback in stderr",
+        })
+        return
+
+    # Zero exit code — but check for known failure signatures in stdout
+    sig_errors = _detect_output_signatures(exec_result.stdout, spec)
+    if sig_errors:
+        for e in sig_errors:
+            results.append(TestResult(
+                test_name=f"output_{e['code']}",
+                status="failed",
+                stdout=exec_result.stdout,
+                validation_details=e["message"],
+            ))
+            all_errors.append(e)
+        return
+
+    results.append(TestResult(
+        test_name="live_execution",
+        status="passed",
+        stdout=exec_result.stdout,
+        validation_details="Pipeline executed end-to-end and produced output",
+    ))
+
+
+_FAILURE_SIGNATURES = [
+    (re.compile(r"no documents provided", re.I), "EMPTY_INPUTS",
+     "Agent ran but received no input data — kickoff(inputs=...) was likely empty"),
+    (re.compile(r"OPENAI_API_KEY is required", re.I), "MISSING_API_KEY",
+     "Code did not get OPENAI_API_KEY — env injection issue"),
+    (re.compile(r"additionalProperties|Invalid schema for function|strict.*True", re.I), "STRICT_SCHEMA",
+     "Tool function signature breaks OpenAI strict schema (default params or shadowed names)"),
+    (re.compile(r"ImportError: cannot import name '(\w+)'", re.I), "IMPORT_ERROR",
+     "Code references a symbol that wasn't generated"),
+    (re.compile(r"KeyError: ['\"]([^'\"]+)['\"]", re.I), "KEY_ERROR",
+     "Pipeline tried to read a field not present in input dict"),
+]
+
+
+def _detect_output_signatures(stdout: str, spec: AgentSpec) -> list[dict]:
+    """Scan stdout for known failure substrings."""
+    found: list[dict] = []
+    for pattern, code, message in _FAILURE_SIGNATURES:
+        if pattern.search(stdout):
+            found.append({
+                "code": code,
+                "file": "<runtime>",
+                "severity": "error",
+                "message": f"{message}: '{pattern.pattern}' matched in output",
+                "stdout_excerpt": stdout[-1000:],
+            })
+    return found
+
+
+# ── Rule-based failure classifier ─────────────────────────────────────
+
+
+_CLASSIFIER_RULES = [
+    (
+        re.compile(r"ImportError: cannot import name ['\"](\w+)['\"]"),
+        lambda m: {
+            "error_type": "crash",
+            "failing_agent": "builder",
+            "root_cause_level": "code",
+            "root_cause_analysis": f"Builder imported '{m.group(1)}' but never defined it.",
+            "spec_decision_responsible": "tools list incomplete or builder omitted a function",
+            "suggested_fix": f"Add `def {m.group(1)}(data: dict) -> dict:` to tools.py",
+        },
+    ),
+    (
+        re.compile(r"OPENAI_API_KEY is required", re.I),
+        lambda m: {
+            "error_type": "crash",
+            "failing_agent": "runtime",
+            "root_cause_level": "code",
+            "root_cause_analysis": "main.py did not propagate OPENROUTER_API_KEY to OPENAI_API_KEY",
+            "spec_decision_responsible": "main.py env-injection block missing",
+            "suggested_fix": "In main.py, copy OPENROUTER_API_KEY to OPENAI_API_KEY before calling kickoff()",
+        },
+    ),
+    (
+        re.compile(r"additionalProperties|Invalid schema for function|'strict':\s*True", re.I),
+        lambda m: {
+            "error_type": "crash",
+            "failing_agent": "tools",
+            "root_cause_level": "code",
+            "root_cause_analysis": "A tool function has params with defaults or shadowed names — breaks OpenAI strict schema",
+            "spec_decision_responsible": "tools.py @tool function signature",
+            "suggested_fix": "Refactor all @tool functions to single `data: dict` parameter, return dict",
+        },
+    ),
+    (
+        re.compile(r"KeyError: ['\"]([^'\"]+)['\"]"),
+        lambda m: {
+            "error_type": "missing_field",
+            "failing_agent": "pipeline",
+            "root_cause_level": "spec",
+            "root_cause_analysis": f"Field '{m.group(1)}' missing from pipeline_input_schema or upstream output",
+            "spec_decision_responsible": "pipeline_input_schema / agent io_contract",
+            "suggested_fix": f"Add '{m.group(1)}' to pipeline_input_schema OR remove the dependency",
+        },
+    ),
+    (
+        re.compile(r"no documents provided", re.I),
+        lambda m: {
+            "error_type": "wrong_output",
+            "failing_agent": "first_agent",
+            "root_cause_level": "code",
+            "root_cause_analysis": "Agents ran but kickoff(inputs=...) was empty — sample data not wired",
+            "spec_decision_responsible": "main.py kickoff wiring",
+            "suggested_fix": "Load sample_data.json and pass to kickoff(inputs=...)",
+        },
+    ),
+]
+
+
+def _classify_failures_rules(
     errors: list[dict],
+    exec_result: ExecutionResult | None,
+    spec: AgentSpec,
+) -> tuple[list[FailureTrace], list[dict]]:
+    """Apply regex rules to error messages + stderr/stdout. Return (classified, unclassified)."""
+    classified: list[FailureTrace] = []
+    unclassified: list[dict] = []
+    haystack_parts = []
+    for e in errors:
+        haystack_parts.append(str(e.get("message", "")))
+        haystack_parts.append(str(e.get("stdout_excerpt", "")))
+    if exec_result:
+        haystack_parts.append(exec_result.stdout or "")
+        haystack_parts.append(exec_result.stderr or "")
+    haystack = "\n".join(haystack_parts)
+
+    matched_codes: set[str] = set()
+    for pattern, builder in _CLASSIFIER_RULES:
+        m = pattern.search(haystack)
+        if m:
+            data = builder(m)
+            trace_key = f"{data['error_type']}:{data['suggested_fix'][:40]}"
+            if trace_key in matched_codes:
+                continue
+            matched_codes.add(trace_key)
+            classified.append(FailureTrace(
+                test_name=f"rule_match_{data['error_type']}",
+                raw_error=m.group(0),
+                **data,
+            ))
+
+    # Unclassified = errors we have not produced any trace for
+    if not classified and errors:
+        unclassified.extend(errors)
+
+    return classified, unclassified
+
+
+# ── LLM fallback failure tracing ──────────────────────────────────────
+
+
+def _trace_failures_llm(
+    llm: LLMService, spec: AgentSpec, code: CodeBundle, errors: list[dict]
 ) -> list[FailureTrace]:
-    """Map failures back to spec decisions (code-level vs spec-level)."""
     user_msg = (
         f"## AgentSpec\n\n{spec.model_dump_json(indent=2)}"
         f"\n\n## Generated Code\n\n{json.dumps(code.files, indent=2)}"
-        f"\n\n## Validation Errors\n\n{json.dumps(errors, indent=2)}"
+        f"\n\n## Unclassified Errors\n\n{json.dumps(errors, indent=2)}"
     )
-
     response = llm.call(
         agent_name=AGENT_NAME,
         system_prompt=FAILURE_ANALYSIS_SYSTEM,
@@ -399,45 +394,77 @@ def _trace_failures(
         json_mode=True,
         temperature=0.1,
     )
-
     try:
         data = json.loads(response)
         return [FailureTrace(**ft) for ft in data.get("failure_traces", [])]
     except (json.JSONDecodeError, Exception) as e:
-        logger.error("Tester: failure trace parse failed: %s", e)
-        # Return a generic trace so the pipeline can still route
-        return [
-            FailureTrace(
-                test_name="parse_failure",
-                error_type="crash",
-                raw_error=str(e),
-                failing_agent="unknown",
-                root_cause_level="code",
-                root_cause_analysis="Failure trace generation itself failed",
-                spec_decision_responsible="N/A",
-                suggested_fix="Regenerate code with stricter output format",
-            )
-        ]
+        logger.error("Tester: LLM failure trace parse failed: %s", e)
+        return [FailureTrace(
+            test_name="parse_failure",
+            error_type="crash",
+            raw_error=str(e),
+            failing_agent="unknown",
+            root_cause_level="code",
+            root_cause_analysis="Failure trace generation itself failed",
+            spec_decision_responsible="N/A",
+            suggested_fix="Inspect logs",
+        )]
 
 
-# ── Subprocess Fallback ──────────────────────────────────────────────
+# ── Test case generation (LLM, report-only) ───────────────────────────
 
 
-def _run_subprocess(code: CodeBundle) -> ExecutionResult:
-    """Run generated code via subprocess.run() when Docker is unavailable."""
-    from app.config import settings
+def _generate_test_cases(llm, spec, code):
+    code_summary = {}
+    for fname, content in code.files.items():
+        lines = content.split("\n")
+        code_summary[fname] = "\n".join(lines[:30]) + ("\n... (truncated)" if len(lines) > 30 else "")
 
-    timeout = settings.docker_timeout
+    user_msg = (
+        f"## AgentSpec\n\n{spec.model_dump_json(indent=2)}"
+        f"\n\n## Generated Code (summary)\n\n{json.dumps(code_summary, indent=2)}"
+    )
+    response = llm.call(
+        agent_name=AGENT_NAME,
+        system_prompt=TEST_GENERATION_SYSTEM,
+        user_prompt=user_msg,
+        json_mode=True,
+        temperature=0.2,
+    )
+    try:
+        data = json.loads(response)
+        return [TestCase(**tc) for tc in data.get("test_cases", [])]
+    except Exception as e:
+        logger.error("Tester: test generation parse failed: %s", e)
+        return []
+
+
+# ── Subprocess fallback (with env injection) ──────────────────────────
+
+
+def _run_subprocess(code: CodeBundle, env: dict[str, str], timeout: int) -> ExecutionResult:
     tmp_dir = None
     try:
         tmp_dir = tempfile.mkdtemp(prefix="frank_test_")
         tmp_path = Path(tmp_dir)
-
-        # Write files to temp directory
         for fname, content in code.files.items():
             fpath = tmp_path / fname
             fpath.parent.mkdir(parents=True, exist_ok=True)
             fpath.write_text(content, encoding="utf-8")
+
+        # Best-effort: install requirements.txt into current python
+        req = tmp_path / "requirements.txt"
+        if req.exists():
+            try:
+                subprocess.run(
+                    ["pip", "install", "-q", "-r", str(req)],
+                    capture_output=True, text=True, timeout=180,
+                )
+            except Exception as e:
+                logger.warning("Subprocess fallback: pip install failed: %s", e)
+
+        merged_env = dict(os.environ)
+        merged_env.update(env or {})
 
         result = subprocess.run(
             ["python", code.entry_point],
@@ -445,6 +472,7 @@ def _run_subprocess(code: CodeBundle) -> ExecutionResult:
             capture_output=True,
             text=True,
             timeout=timeout,
+            env=merged_env,
         )
         return ExecutionResult(
             exit_code=result.returncode,
@@ -454,21 +482,11 @@ def _run_subprocess(code: CodeBundle) -> ExecutionResult:
             error="",
         )
     except subprocess.TimeoutExpired:
-        return ExecutionResult(
-            exit_code=-1,
-            stdout="",
-            stderr="",
-            timed_out=True,
-            error=f"Subprocess execution timed out after {timeout}s",
-        )
+        return ExecutionResult(exit_code=-1, stdout="", stderr="", timed_out=True,
+                               error=f"Subprocess timed out after {timeout}s")
     except Exception as e:
-        return ExecutionResult(
-            exit_code=-1,
-            stdout="",
-            stderr="",
-            timed_out=False,
-            error=f"Subprocess execution error: {e}",
-        )
+        return ExecutionResult(exit_code=-1, stdout="", stderr="", timed_out=False,
+                               error=f"Subprocess error: {e}")
     finally:
         if tmp_dir:
             import shutil

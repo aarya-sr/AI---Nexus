@@ -51,7 +51,7 @@ export function useWebSocket(sessionId: string | null) {
           dispatch({
             type: "CHAT_MESSAGE",
             payload: {
-              id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              id: `msg-${msg.timestamp}-${((msg.payload as { text?: string }).text ?? "").slice(0, 30)}`,
               variant: "system",
               type: msg.type,
               payload: msg.payload,

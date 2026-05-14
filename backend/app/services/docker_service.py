@@ -55,6 +55,7 @@ class DockerService:
         code: CodeBundle,
         timeout: int | None = None,
         env: dict[str, str] | None = None,
+        network_disabled: bool = True,
     ) -> ExecutionResult:
         """Write code files to temp dir, mount into container, run, capture output."""
         if not self._available:
@@ -80,7 +81,7 @@ class DockerService:
                     "\n".join(code.dependencies) + "\n"
                 )
 
-            return self._execute_container(tmp_dir, code.entry_point, timeout, env)
+            return self._execute_container(tmp_dir, code.entry_point, timeout, env, network_disabled)
 
         except ImageNotFound:
             logger.error("Runner image '%s' not found — build it first", RUNNER_IMAGE)
@@ -101,6 +102,7 @@ class DockerService:
         entry_point: str,
         timeout: int,
         env: dict[str, str] | None,
+        network_disabled: bool = True,
     ) -> ExecutionResult:
         """Run a container with agent code mounted at /agent."""
         container = None
@@ -119,7 +121,7 @@ class DockerService:
                 environment=env or {},
                 detach=True,
                 mem_limit="512m",
-                network_disabled=True,
+                network_disabled=network_disabled,
             )
 
             # Wait with timeout
