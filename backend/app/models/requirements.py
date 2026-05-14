@@ -55,14 +55,14 @@ class GapAnalysisResult(BaseModel):
     categories: list[CategoryAssessment]
     overall_quality: Literal["high", "medium", "low"]
 
-    def gaps(self) -> list[CategoryAssessment]:
-        """Return categories below 0.7, in priority order."""
+    def gaps(self, threshold: float = 0.7) -> list[CategoryAssessment]:
+        """Return categories below threshold, in priority order."""
         priority_order = ["Input/Output", "Process", "Data", "Edge Cases", "Quality Bar"]
-        below = [c for c in self.categories if c.confidence < 0.7]
+        below = [c for c in self.categories if c.confidence < threshold]
         return sorted(below, key=lambda c: priority_order.index(c.name))
 
-    def all_complete(self) -> bool:
-        return all(c.confidence >= 0.7 for c in self.categories)
+    def all_complete(self, threshold: float = 0.7) -> bool:
+        return all(c.confidence >= threshold for c in self.categories)
 
 
 class QuestionCategory(BaseModel):

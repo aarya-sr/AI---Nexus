@@ -12,6 +12,7 @@ is available. Falls back to static-only validation when Docker is unavailable.
 import json
 import logging
 import py_compile
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -127,9 +128,11 @@ def tester_agent(
     analysis_issues = _run_static_analysis(llm, spec, code)
     all_errors = syntax_errors + analysis_issues
 
-    # ── 3. Docker execution (when available) ─────────────────────────
+    # ── 3. Code execution (Docker preferred, subprocess fallback) ───
     exec_result: ExecutionResult | None = None
-    if docker.available and docker.image_exists() and not syntax_errors:
+    if syntax_errors:
+        logger.info("Tester: skipping execution — syntax errors found")
+    elif docker.available and docker.image_exists():
         logger.info("Tester: running code in Docker sandbox")
         exec_result = docker.run_code_bundle(code)
         if exec_result.timed_out:
@@ -138,12 +141,10 @@ def tester_agent(
             logger.warning("Tester: Docker execution failed (exit %d)", exec_result.exit_code)
         else:
             logger.info("Tester: Docker execution succeeded")
-    elif syntax_errors:
-        logger.info("Tester: skipping Docker — syntax errors found")
-    elif not docker.available:
-        logger.info("Tester: Docker not available — static-only validation")
-    elif not docker.image_exists():
-        logger.info("Tester: runner image not built — static-only validation")
+    else:
+        # Subprocess fallback — run entry point directly
+        logger.info("Tester: Docker unavailable — using subprocess fallback")
+        exec_result = _run_subprocess(code)
 
     # ── 4. Build test report ─────────────────────────────────────────
     results: list[TestResult] = []
@@ -417,3 +418,58 @@ def _trace_failures(
                 suggested_fix="Regenerate code with stricter output format",
             )
         ]
+
+
+# ── Subprocess Fallback ──────────────────────────────────────────────
+
+
+def _run_subprocess(code: CodeBundle) -> ExecutionResult:
+    """Run generated code via subprocess.run() when Docker is unavailable."""
+    from app.config import settings
+
+    timeout = settings.docker_timeout
+    tmp_dir = None
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="frank_test_")
+        tmp_path = Path(tmp_dir)
+
+        # Write files to temp directory
+        for fname, content in code.files.items():
+            fpath = tmp_path / fname
+            fpath.parent.mkdir(parents=True, exist_ok=True)
+            fpath.write_text(content, encoding="utf-8")
+
+        result = subprocess.run(
+            ["python", code.entry_point],
+            cwd=str(tmp_path),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return ExecutionResult(
+            exit_code=result.returncode,
+            stdout=result.stdout[:5000],
+            stderr=result.stderr[:5000],
+            timed_out=False,
+            error="",
+        )
+    except subprocess.TimeoutExpired:
+        return ExecutionResult(
+            exit_code=-1,
+            stdout="",
+            stderr="",
+            timed_out=True,
+            error=f"Subprocess execution timed out after {timeout}s",
+        )
+    except Exception as e:
+        return ExecutionResult(
+            exit_code=-1,
+            stdout="",
+            stderr="",
+            timed_out=False,
+            error=f"Subprocess execution error: {e}",
+        )
+    finally:
+        if tmp_dir:
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)

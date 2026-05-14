@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+LABEL name="frankenstein-runner"
+LABEL description="Sandboxed execution environment for generated agent code"
+
+WORKDIR /agent
+
+# Pre-install common agent framework dependencies
+RUN pip install --no-cache-dir \
+    crewai \
+    langgraph \
+    langchain-core \
+    openai \
+    requests \
+    pandas \
+    pypdf \
+    beautifulsoup4 \
+    pydantic
+
+# Non-root user for sandbox safety
+RUN useradd -m runner
+USER runner
+
+ENTRYPOINT ["python"]
+CMD ["main.py"]

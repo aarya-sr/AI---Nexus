@@ -1,4 +1,5 @@
 /* Default browser cursors — no custom cursor */
-input, textarea {
+.lab-landing input,
+.lab-landing textarea {
   caret-color: var(--formaldehyde);
 }

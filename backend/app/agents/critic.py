@@ -18,7 +18,7 @@ import logging
 from collections import defaultdict
 
 from app.models.critique import CritiqueReport, Finding
-from app.models.spec import AgentSpec
+from app.models.spec import AgentSpec, GraphEdge
 from app.models.state import FrankensteinState
 from app.services.llm_service import LLMService
 
@@ -118,19 +118,54 @@ def critic_agent(
     }
 
 
+# ── Edge Inference ───────────────────────────────────────────────────
+
+
+def _get_edges(spec: AgentSpec) -> list[GraphEdge]:
+    """Get edges from graph definition, or infer from agent sends_to/receives_from."""
+    if spec.execution_flow.graph and spec.execution_flow.graph.edges:
+        return spec.execution_flow.graph.edges
+
+    # Infer edges from agent relationships for sequential/hierarchical specs
+    edges: list[GraphEdge] = []
+    seen: set[tuple[str, str]] = set()
+    for agent in spec.agents:
+        for target in agent.sends_to:
+            pair = (agent.id, target)
+            if pair not in seen:
+                edges.append(GraphEdge(from_agent=agent.id, to_agent=target))
+                seen.add(pair)
+        for source in agent.receives_from:
+            pair = (source, agent.id)
+            if pair not in seen:
+                edges.append(GraphEdge(from_agent=source, to_agent=agent.id))
+                seen.add(pair)
+
+    # Fallback for sequential: chain agents in order
+    if not edges and spec.execution_flow.pattern == "sequential" and len(spec.agents) > 1:
+        for i in range(len(spec.agents) - 1):
+            edges.append(GraphEdge(
+                from_agent=spec.agents[i].id,
+                to_agent=spec.agents[i + 1].id,
+            ))
+
+    return edges
+
+
 # ── Vector 1: Circular Dependencies ──────────────────────────────────
 
 
 def _check_circular_dependencies(spec: AgentSpec) -> list[Finding]:
     """Topological sort on the execution graph — cycles are critical."""
-    if not spec.execution_flow.graph or not spec.execution_flow.graph.edges:
+    inferred_edges = _get_edges(spec)
+    if not inferred_edges:
         return []
 
     adj: dict[str, list[str]] = defaultdict(list)
     in_degree: dict[str, int] = defaultdict(int)
-    nodes: set[str] = set(spec.execution_flow.graph.nodes)
+    nodes: set[str] = {a.id for a in spec.agents}
 
-    for edge in spec.execution_flow.graph.edges:
+    for edge in inferred_edges:
         adj[edge.from_agent].append(edge.to_agent)
         in_degree[edge.to_agent] += 1
         nodes.add(edge.from_agent)
@@ -173,10 +208,11 @@ def _check_format_compatibility(spec: AgentSpec) -> list[Finding]:
     findings: list[Finding] = []
     contracts = {c.agent_id: c for c in spec.io_contracts}
 
-    if not spec.execution_flow.graph or not spec.execution_flow.graph.edges:
+    edges = _get_edges(spec)
+    if not edges:
         return findings
 
-    for edge in spec.execution_flow.graph.edges:
+    for edge in edges:
         src = contracts.get(edge.from_agent)
         dst = contracts.get(edge.to_agent)
 
@@ -262,9 +298,8 @@ def _check_dependency_completeness(spec: AgentSpec) -> list[Finding]:
 
     # Build upstream map
     upstream: dict[str, set[str]] = defaultdict(set)
-    if spec.execution_flow.graph and spec.execution_flow.graph.edges:
-        for edge in spec.execution_flow.graph.edges:
-            upstream[edge.to_agent].add(edge.from_agent)
+    for edge in _get_edges(spec):
+        upstream[edge.to_agent].add(edge.from_agent)
 
     for agent in spec.agents:
         # Entry-point agents (no upstream) receive pipeline input — skip
@@ -332,9 +367,8 @@ def _check_dead_ends(spec: AgentSpec) -> list[Finding]:
 
     # "skip" on agents with downstream dependents
     downstream: dict[str, set[str]] = defaultdict(set)
-    if spec.execution_flow.graph and spec.execution_flow.graph.edges:
-        for edge in spec.execution_flow.graph.edges:
-            downstream[edge.from_agent].add(edge.to_agent)
+    for edge in _get_edges(spec):
+        downstream[edge.from_agent].add(edge.to_agent)
 
     for eh in spec.error_handling:
         if eh.on_failure == "skip" and downstream.get(eh.agent_id):
@@ -364,8 +398,9 @@ def _check_resource_conflicts(spec: AgentSpec) -> list[Finding]:
     if not spec.memory.shared_keys:
         return findings
 
-    if not spec.execution_flow.graph or not spec.execution_flow.graph.edges:
-        # Parallel pattern without a graph — all agents are parallel
+    edges = _get_edges(spec)
+    if not edges:
+        # Parallel pattern without edges — all agents are parallel
         if spec.execution_flow.pattern == "parallel" and len(spec.agents) > 1:
             findings.append(
                 Finding(
@@ -384,7 +419,7 @@ def _check_resource_conflicts(spec: AgentSpec) -> list[Finding]:
 
     # Build dependency map to find truly parallel agent pairs
     depends_on: dict[str, set[str]] = defaultdict(set)
-    for edge in spec.execution_flow.graph.edges:
+    for edge in edges:
         depends_on[edge.to_agent].add(edge.from_agent)
 
     ids = [a.id for a in spec.agents]

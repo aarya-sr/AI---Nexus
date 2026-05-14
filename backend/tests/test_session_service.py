@@ -59,13 +59,6 @@ def test_set_and_clear_status_ws(tmp_path):
     assert _registry[sid]["status_ws"] is None
 
 
-def test_update_stage(tmp_path):
-    svc = _make_service(tmp_path)
-    sid = svc.create_session()
-    svc.update_stage(sid, "elicitor")
-    assert _registry[sid]["stage"] == "elicitor"
-
-
 def test_get_session_dir(tmp_path):
     svc = _make_service(tmp_path)
     sid = svc.create_session()

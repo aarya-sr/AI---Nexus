@@ -38,7 +38,15 @@ _SHARED_RULES = """\
 - Use exact agent IDs, roles, goals, backstories from the spec
 
 Return a single JSON object mapping filename → complete source code:
-{"main.py": "...", "agents.py": "...", ...}
+{"main.py": "...", "agents.py": "...", "README.md": "...", ...}
+
+## README.md
+Always include a README.md with:
+- Project title and description (from spec metadata)
+- Prerequisites (Python 3.11+, required API keys)
+- Installation: `pip install -r requirements.txt`
+- Configuration: describe config.yaml fields (especially API keys — use env vars or config, never hardcode)
+- Run command: `python main.py`
 """
 
 CREWAI_SYSTEM = """\
@@ -233,6 +241,9 @@ def builder_agent(
     # ── Generate code ────────────────────────────────────────────────
     files = _generate_code(llm, spec, tool_templates, failure_feedback)
 
+    # ── Collect dependencies ─────────────────────────────────────────
+    deps = _collect_dependencies(spec, tool_templates)
+
     # ── Validate syntax ──────────────────────────────────────────────
     passed, errors = _validate_syntax(files)
     if errors:
@@ -240,8 +251,23 @@ def builder_agent(
     else:
         logger.info("Builder: all files pass syntax check")
 
-    # ── Collect dependencies ─────────────────────────────────────────
-    deps = _collect_dependencies(spec, tool_templates)
+    # ── Import resolution check ─────────────────────────────────────
+    import_errors = _check_imports(files, deps)
+    if import_errors:
+        logger.warning("Builder: %d import issues: %s", len(import_errors), import_errors)
+        errors.extend(import_errors)
+        passed = False
+
+    # ── I/O contract check ──────────────────────────────────────────
+    contract_errors = _check_io_contracts(files, spec)
+    if contract_errors:
+        logger.warning("Builder: %d I/O contract issues: %s", len(contract_errors), contract_errors)
+        errors.extend(contract_errors)
+        passed = False
+
+    # ── Persist to disk for download ────────────────────────────────
+    if state.get("session_id"):
+        _persist_to_disk(state["session_id"], files)
 
     return {
         "generated_code": CodeBundle(
@@ -371,3 +397,98 @@ def _collect_dependencies(
             deps.add(d)
 
     return sorted(deps)
+
+
+# ── Import Resolution Check ──────────────────────────────────────────
+
+# Packages provided by these pip names (simplified mapping)
+_PIP_TO_MODULES: dict[str, set[str]] = {
+    "crewai": {"crewai"},
+    "langgraph": {"langgraph"},
+    "langchain-core": {"langchain_core", "langchain"},
+    "openai": {"openai"},
+    "requests": {"requests"},
+    "pandas": {"pandas"},
+    "pydantic": {"pydantic"},
+    "beautifulsoup4": {"bs4"},
+    "pypdf": {"pypdf"},
+}
+
+import sys as _sys
+
+_STDLIB_MODULES = set(_sys.stdlib_module_names) if hasattr(_sys, "stdlib_module_names") else set()
+
+
+def _check_imports(files: dict[str, str], deps: list[str]) -> list[str]:
+    """Check that every import in .py files is resolvable against deps + stdlib + local files."""
+    import re
+
+    # Build set of available top-level modules
+    available: set[str] = set(_STDLIB_MODULES)
+    # Local modules from generated files
+    for fname in files:
+        if fname.endswith(".py"):
+            available.add(fname.removesuffix(".py"))
+    # Modules from pip dependencies
+    for dep in deps:
+        if dep in _PIP_TO_MODULES:
+            available.update(_PIP_TO_MODULES[dep])
+        else:
+            available.add(dep.replace("-", "_"))
+
+    errors: list[str] = []
+    import_re = re.compile(r"^\s*(?:import|from)\s+([a-zA-Z_][a-zA-Z0-9_]*)")
+
+    for fname, content in files.items():
+        if not fname.endswith(".py"):
+            continue
+        for lineno, line in enumerate(content.splitlines(), 1):
+            m = import_re.match(line)
+            if m:
+                top_module = m.group(1)
+                if top_module not in available:
+                    errors.append(f"{fname}:{lineno}: unresolved import '{top_module}'")
+    return errors
+
+
+def _check_io_contracts(files: dict[str, str], spec) -> list[str]:
+    """Check that generated agent functions reference fields from the spec's I/O contracts."""
+    errors: list[str] = []
+    if not hasattr(spec, "io_contracts") or not spec.io_contracts:
+        return errors
+
+    # Collect all field names mentioned in io_contracts
+    contract_fields: set[str] = set()
+    for contract in spec.io_contracts:
+        for f in getattr(contract, "input_fields", []):
+            contract_fields.add(f if isinstance(f, str) else str(f))
+        for f in getattr(contract, "output_fields", []):
+            contract_fields.add(f if isinstance(f, str) else str(f))
+
+    if not contract_fields:
+        return errors
+
+    # Check agents.py (where agent functions live) references contract fields
+    agents_code = files.get("agents.py", "")
+    if agents_code:
+        missing = [f for f in contract_fields if f not in agents_code]
+        if missing:
+            errors.append(
+                f"agents.py: I/O contract fields not found in code: {', '.join(sorted(missing))}"
+            )
+    return errors
+
+
+# ── Disk Persistence ──────────────────────────────────────────────────
+
+
+def _persist_to_disk(session_id: str, files: dict[str, str]) -> None:
+    """Write generated files to disk so the download endpoint can serve them."""
+    from app.config import settings
+
+    session_dir = Path(settings.generated_agents_dir) / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    for fname, content in files.items():
+        fpath = session_dir / fname
+        fpath.parent.mkdir(parents=True, exist_ok=True)
+        fpath.write_text(content, encoding="utf-8")

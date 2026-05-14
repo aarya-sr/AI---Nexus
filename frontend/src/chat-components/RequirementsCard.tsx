@@ -18,10 +18,14 @@ export function RequirementsCard({ requirements, onApprove, onEdit }: Props) {
     typeof window !== "undefined" &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches
 
+  const [approved, setApproved] = useState(false)
+
   const handleApprove = useCallback(async () => {
+    if (approving || approved) return
     setApproving(true)
     try {
       await onApprove()
+      setApproved(true)
       if (prefersReducedMotion) {
         setCollapsed(true)
       } else {
@@ -31,7 +35,7 @@ export function RequirementsCard({ requirements, onApprove, onEdit }: Props) {
     } catch {
       setApproving(false)
     }
-  }, [onApprove, prefersReducedMotion])
+  }, [onApprove, prefersReducedMotion, approving, approved])
 
   const handleSubmitCorrections = useCallback(() => {
     if (!corrections.trim()) return

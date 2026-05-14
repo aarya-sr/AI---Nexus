@@ -1,30 +1,32 @@
 /* Display — Lab journal, typewriter */
-.font-display {
+.lab-landing .font-display {
   font-family: var(--font-display);
 }
 
 /* Mono — Machine labels, agent names */
-.font-mono {
+.lab-landing .font-mono {
   font-family: var(--font-mono);
 }
 
 /* Body — Old-world descriptions */
-.font-body {
+.lab-landing .font-body {
   font-family: var(--font-body);
 }
 
-h1, h2, h3 {
+.lab-landing h1,
+.lab-landing h2,
+.lab-landing h3 {
   font-family: var(--font-display);
   font-weight: 400;
   line-height: 1.2;
 }
 
-h1 { font-size: clamp(2.5rem, 6vw, 5rem); }
-h2 { font-size: clamp(1.8rem, 4vw, 3rem); }
-h3 { font-size: clamp(1.2rem, 2.5vw, 1.8rem); }
+.lab-landing h1 { font-size: clamp(2.5rem, 6vw, 5rem); }
+.lab-landing h2 { font-size: clamp(1.8rem, 4vw, 3rem); }
+.lab-landing h3 { font-size: clamp(1.2rem, 2.5vw, 1.8rem); }
 
 /* Specimen label style */
-.specimen-label {
+.lab-landing .specimen-label {
   font-family: var(--font-mono);
   font-size: 0.65rem;
   letter-spacing: 0.2em;
@@ -36,7 +38,7 @@ h3 { font-size: clamp(1.2rem, 2.5vw, 1.8rem); }
 }
 
 /* Typewriter caret */
-.typewriter-input {
+.lab-landing .typewriter-input {
   font-family: var(--font-display);
   caret-color: var(--formaldehyde);
 }

@@ -1,3 +1,10 @@
+export async function createSession(): Promise<string> {
+  const res = await fetch("/api/sessions", { method: "POST" })
+  if (!res.ok) throw new Error(`Server error: ${res.status}`)
+  const body = await res.json()
+  return body.session_id
+}
+
 export async function approveCheckpoint(
   sessionId: string,
   checkpoint: "requirements" | "spec",
@@ -13,4 +20,20 @@ export async function approveCheckpoint(
     throw new Error(`Approve request failed: ${res.status}`)
   }
   return res.json()
+}
+
+export async function downloadAgent(sessionId: string): Promise<void> {
+  const res = await fetch(`/api/sessions/${sessionId}/download`)
+  if (!res.ok) {
+    throw new Error(`Download failed: ${res.status}`)
+  }
+  const blob = await res.blob()
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `agent_${sessionId.slice(0, 8)}.zip`
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  URL.revokeObjectURL(url)
 }

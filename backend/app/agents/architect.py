@@ -359,6 +359,13 @@ def _parse_spec(response: str) -> AgentSpec:
             if "to" in edge and "to_agent" not in edge:
                 edge["to_agent"] = edge.pop("to")
 
+    # Coerce invalid execution_flow.pattern to nearest valid value
+    valid_patterns = {"sequential", "parallel", "hierarchical", "graph"}
+    pattern = ef.get("pattern", "")
+    if pattern and pattern not in valid_patterns:
+        logger.warning("Architect returned invalid pattern '%s', coercing to 'graph'", pattern)
+        ef["pattern"] = "graph"
+
     try:
         return AgentSpec(**data)
     except ValidationError as e:

@@ -9,6 +9,7 @@ export interface PipelineState {
   isWorking: boolean
   isConnected: boolean
   hasStarted: boolean
+  toastMessage: string | null
 }
 
 export const initialState: PipelineState = {
@@ -19,6 +20,7 @@ export const initialState: PipelineState = {
   isWorking: false,
   isConnected: false,
   hasStarted: false,
+  toastMessage: null,
 }
 
 export type Action =
@@ -31,6 +33,9 @@ export type Action =
   | { type: "SET_CONNECTED"; payload: boolean }
   | { type: "SET_WORKING"; payload: boolean }
   | { type: "SET_STARTED" }
+  | { type: "SHOW_TOAST"; payload: string }
+  | { type: "DISMISS_TOAST" }
+  | { type: "RESET" }
 
 export function pipelineReducer(state: PipelineState, action: Action): PipelineState {
   switch (action.type) {
@@ -47,7 +52,15 @@ export function pipelineReducer(state: PipelineState, action: Action): PipelineS
         if (s.status === "active" && s.id !== stage) return { ...s, status: "complete" as const }
         return s
       })
-      return { ...state, stages, currentStage: stage, isWorking: stage !== "idle" }
+      return { ...state, stages, currentStage: stage, isWorking: true }
+    }
+
+    case "PROGRESS": {
+      const { stage, percent, detail } = action.payload
+      const stages = state.stages.map((s) =>
+        s.id === stage ? { ...s, description: `${detail} (${Math.round(percent)}%)` } : s
+      )
+      return { ...state, stages }
     }
 
     case "COMPLETE": {
@@ -96,6 +109,15 @@ export function pipelineReducer(state: PipelineState, action: Action): PipelineS
 
     case "SET_STARTED":
       return { ...state, hasStarted: true }
+
+    case "SHOW_TOAST":
+      return { ...state, toastMessage: action.payload }
+
+    case "DISMISS_TOAST":
+      return { ...state, toastMessage: null }
+
+    case "RESET":
+      return { ...initialState, stages: PIPELINE_STAGES.map((s) => ({ ...s })) }
 
     default:
       return state

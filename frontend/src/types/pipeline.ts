@@ -18,6 +18,12 @@ export const PIPELINE_STAGES: PipelineStage[] = [
   { id: "learner", name: "Learning", description: "Storing learnings", status: "pending" },
 ]
 
+const AUTONOMOUS_STAGES = new Set(["architect", "critic", "builder", "tester", "learner"])
+
+export function isAutonomousStage(stageId: string): boolean {
+  return AUTONOMOUS_STAGES.has(stageId)
+}
+
 export interface ChatEntry {
   id: string
   variant: "system" | "user"

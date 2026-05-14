@@ -55,14 +55,14 @@ development_status:
   2-1-architect-agent-rag-queries-and-task-decomposition: review
   2-2-architect-agent-spec-compilation: done
   2-3-critic-agent-and-architect-critic-feedback-loop: review
-  2-4-spec-review-and-approval-checkpoint: review
+  2-4-spec-review-and-approval-checkpoint: done
   epic-2-retrospective: optional
 
   # Epic 3: Code Generation, Testing & Delivery
-  epic-3: backlog
-  3-1-builder-agent-crewai-and-langgraph-compilers: backlog
-  3-2-builder-agent-code-validation-and-self-retry: backlog
-  3-3-tester-agent-execution-and-failure-tracing: backlog
-  3-4-learner-agent-and-build-memory: backlog
-  3-5-build-progress-completion-and-download: backlog
+  epic-3: in-progress
+  3-1-builder-agent-crewai-and-langgraph-compilers: review
+  3-2-builder-agent-code-validation-and-self-retry: review
+  3-3-tester-agent-execution-and-failure-tracing: review
+  3-4-learner-agent-and-build-memory: review
+  3-5-build-progress-completion-and-download: review
   epic-3-retrospective: optional

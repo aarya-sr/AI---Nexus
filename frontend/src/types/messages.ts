@@ -22,9 +22,11 @@ export interface QuestionGroupMessage extends BaseMessage {
 export interface CheckpointMessage extends BaseMessage {
   type: "chat.checkpoint"
   payload: {
-    checkpoint: "requirements" | "spec"
-    data: Record<string, unknown>
+    checkpoint_type: "requirements" | "spec"
+    requirements?: Record<string, unknown>
+    spec?: Record<string, unknown>
     critique?: Record<string, unknown> | null
+    architect_reasoning?: string
   }
 }
 
@@ -53,10 +55,6 @@ export interface ErrorMessage extends BaseMessage {
   payload: { stage: string; message: string; recoverable: boolean }
 }
 
-export interface ControlMessage extends BaseMessage {
-  type: "control.approve" | "control.reject" | "control.user_input"
-}
-
 export type ServerMessage =
   | ChatMessage
   | QuestionGroupMessage
@@ -65,5 +63,3 @@ export type ServerMessage =
   | ProgressMessage
   | CompleteMessage
   | ErrorMessage
-
-export type ClientMessage = ControlMessage

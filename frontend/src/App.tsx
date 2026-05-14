@@ -218,7 +218,7 @@ export default function App() {
   }, [])
 
   return (
-    <>
+    <div className="lab-landing">
       <Leva hidden={levaHidden} />
       <LabControls />
       <ScrollProgressBar />
@@ -340,6 +340,6 @@ export default function App() {
           }
         }
       `}</style>
-    </>
+    </div>
   )
 }

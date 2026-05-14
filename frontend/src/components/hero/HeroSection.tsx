@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, Suspense } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Canvas } from '@react-three/fiber'
 import { motion, AnimatePresence } from 'framer-motion'
 import { TypewriterHeadline } from './TypewriterHeadline'
@@ -18,6 +19,7 @@ const PLACEHOLDERS = [
 ]
 
 export function HeroSection() {
+  const navigate = useNavigate()
   const { triggerAssembly, assemblyPhase } = useAssemblyTrigger()
   const { userPrompt, setUserPrompt } = useLabStore()
   const { initAudio, play } = useAudio()
@@ -55,12 +57,17 @@ export function HeroSection() {
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault()
-      if (!userPrompt.trim()) return
+      const prompt = userPrompt.trim()
+      if (!prompt) return
       initAudio()
       play('assembly')
       triggerAssembly()
+      // Navigate to /chat with prompt after a brief animation beat
+      setTimeout(() => {
+        navigate('/chat', { state: { prompt } })
+      }, 800)
     },
-    [userPrompt, triggerAssembly, initAudio, play]
+    [userPrompt, triggerAssembly, initAudio, play, navigate]
   )
 
   const handleKeyDown = useCallback(

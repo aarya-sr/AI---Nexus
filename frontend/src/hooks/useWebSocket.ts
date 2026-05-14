@@ -33,6 +33,13 @@ export function useWebSocket(sessionId: string | null) {
       handleMessage(msg)
     }
 
+    statusWs.onclose = () => {
+      console.warn("Status WS disconnected:", sessionId)
+    }
+    statusWs.onerror = () => {
+      console.warn("Status WS error:", sessionId)
+    }
+
     statusWs.onmessage = (event) => {
       const msg: ServerMessage = JSON.parse(event.data)
       handleMessage(msg)
@@ -64,6 +71,7 @@ export function useWebSocket(sessionId: string | null) {
               timestamp: msg.timestamp,
             },
           })
+          dispatch({ type: "SET_WORKING", payload: false })
           break
 
         case "chat.checkpoint":

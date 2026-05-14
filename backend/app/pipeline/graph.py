@@ -21,13 +21,15 @@ Six-stage StateGraph with two human checkpoints and two feedback loops:
 
 import logging
 
-from langgraph.checkpoint.memory import MemorySaver
+from pathlib import Path
+
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 
 from app.agents.architect import architect_agent
 from app.agents.builder import builder_agent
 from app.agents.critic import critic_agent
-from app.agents.elicitor import elicitor_agent
+from app.agents.elicitor import elicitor_ask, elicitor_compile, route_after_elicitor_ask
 from app.agents.learner import learner_agent
 from app.agents.tester import tester_agent
 from app.config import settings
@@ -92,10 +94,12 @@ def route_after_test(state: FrankensteinState) -> str:
 
     # Check failure traces for root cause level
     failure_traces = state.get("failure_traces", [])
-    for trace in failure_traces:
-        if trace.root_cause_level == "spec":
-            logger.info("Routing: tester → architect (spec-level failure)")
-            return "architect"
+    has_spec_failure = any(t.root_cause_level == "spec" for t in failure_traces)
+
+    if has_spec_failure:
+        # Spec-level failures route to learner with partial_success (not back to architect for MVP)
+        logger.info("Routing: tester → learner (spec-level failure, partial success)")
+        return "learner"
 
     logger.info("Routing: tester → builder (code-level fix)")
     return "builder"
@@ -109,7 +113,8 @@ def build_graph() -> StateGraph:
     graph = StateGraph(FrankensteinState)
 
     # Nodes
-    graph.add_node("elicitor", elicitor_agent)
+    graph.add_node("elicitor_ask", elicitor_ask)
+    graph.add_node("elicitor_compile", elicitor_compile)
     graph.add_node("human_review_requirements", human_checkpoint_requirements)
     graph.add_node("architect", architect_agent)
     graph.add_node("critic", critic_agent)
@@ -119,8 +124,8 @@ def build_graph() -> StateGraph:
     graph.add_node("learner", learner_agent)
 
     # Linear edges
-    graph.set_entry_point("elicitor")
-    graph.add_edge("elicitor", "human_review_requirements")
+    graph.set_entry_point("elicitor_ask")
+    graph.add_edge("elicitor_compile", "human_review_requirements")
     graph.add_edge("human_review_requirements", "architect")
     graph.add_edge("architect", "critic")
     graph.add_edge("human_review_spec", "builder")
@@ -129,6 +134,11 @@ def build_graph() -> StateGraph:
 
     # Conditional edges (feedback loops)
     graph.add_conditional_edges(
+        "elicitor_ask",
+        route_after_elicitor_ask,
+        {"elicitor_ask": "elicitor_ask", "elicitor_compile": "elicitor_compile"},
+    )
+    graph.add_conditional_edges(
         "critic",
         route_after_critique,
         {"architect": "architect", "human_review_spec": "human_review_spec"},
@@ -136,11 +146,16 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         "tester",
         route_after_test,
-        {"learner": "learner", "builder": "builder", "architect": "architect"},
+        {"learner": "learner", "builder": "builder"},
     )
 
     return graph
 
 
-checkpointer = MemorySaver()
+_db_path = Path(__file__).parent.parent.parent / "checkpoints.sqlite3"
+
+import sqlite3 as _sqlite3
+_conn = _sqlite3.connect(str(_db_path), check_same_thread=False)
+checkpointer = SqliteSaver(_conn)
+
 compiled_graph = build_graph().compile(checkpointer=checkpointer)

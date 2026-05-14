@@ -22,10 +22,14 @@ export function SpecReviewCard({ spec, critique, reasoning, onApprove, onFeedbac
     typeof window !== "undefined" &&
     window.matchMedia("(prefers-reduced-motion: reduce)").matches
 
+  const [approved, setApproved] = useState(false)
+
   const handleApprove = useCallback(async () => {
+    if (approving || approved) return
     setApproving(true)
     try {
       await onApprove()
+      setApproved(true)
       if (prefersReducedMotion) {
         setCollapsed(true)
       } else {
@@ -35,7 +39,7 @@ export function SpecReviewCard({ spec, critique, reasoning, onApprove, onFeedbac
     } catch {
       setApproving(false)
     }
-  }, [onApprove, prefersReducedMotion])
+  }, [onApprove, prefersReducedMotion, approving, approved])
 
   const handleSubmitFeedback = useCallback(() => {
     if (!feedback.trim()) return

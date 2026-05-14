@@ -63,7 +63,7 @@ VALID_SPEC_JSON = json.dumps({
     "metadata": {
         "name": "loan_underwriting_pipeline",
         "domain": "loan-underwriting",
-        "framework_target": "sequential",
+        "framework_target": "crewai",
         "decision_rationale": "Sequential flow suits linear processing chain.",
         "created_from_pattern": None,
     },

@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     # Server
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
-    cors_origins: str = "http://localhost:5173"
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     # Storage
     chroma_persist_dir: str = "./chroma_data"
@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     max_elicitor_rounds: int = 3
     completeness_threshold: float = 0.7
     docker_timeout: int = 60
+    pipeline_timeout: int = 300
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
@@ -40,9 +41,9 @@ DOCKER_TIMEOUT = settings.docker_timeout
 # Architect + Critic deliberately use different families for cross-model adversarial review
 MODEL_ROUTING: dict[str, str] = {
     "elicitor": "openai/gpt-4o-mini",
-    "architect": "anthropic/claude-sonnet-4-6",
+    "architect": "openai/gpt-4o",
     "critic": "openai/gpt-4o",
-    "builder": "anthropic/claude-sonnet-4-6",
+    "builder": "openai/gpt-4o",
     "tester": "openai/gpt-4o-mini",
     "learner": "openai/gpt-4o-mini",
 }

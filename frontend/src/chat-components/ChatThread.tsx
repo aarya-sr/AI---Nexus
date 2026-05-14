@@ -6,6 +6,7 @@ import { PhaseDivider } from "./PhaseDivider"
 import { RequirementsCard } from "./RequirementsCard"
 import { SpecReviewCard } from "./SpecReviewCard"
 import { CompletionCard } from "./CompletionCard"
+import { QuestionGroupCard } from "./QuestionGroupCard"
 import { TypingIndicator } from "./TypingIndicator"
 import type { RequirementsDoc, AgentSpec, CritiqueReport } from "../types/models"
 
@@ -38,6 +39,7 @@ export function ChatThread({ sendMessage }: { sendMessage: (data: Record<string,
     if (!sessionId) return
     await approveCheckpoint(sessionId, "requirements", true)
     dispatch({ type: "SET_WORKING", payload: true })
+    dispatch({ type: "SHOW_TOAST", payload: "Requirements approved" })
   }, [sessionId, dispatch])
 
   const handleEdit = useCallback(
@@ -57,6 +59,17 @@ export function ChatThread({ sendMessage }: { sendMessage: (data: Record<string,
     if (!sessionId) return
     await approveCheckpoint(sessionId, "spec", true)
     dispatch({ type: "SET_WORKING", payload: true })
+    dispatch({ type: "SHOW_TOAST", payload: "Blueprint approved — building your agents..." })
+    dispatch({
+      type: "CHAT_MESSAGE",
+      payload: {
+        id: `divider-building-${Date.now()}`,
+        variant: "system",
+        type: "phase.divider",
+        payload: { label: "Building" },
+        timestamp: new Date().toISOString(),
+      },
+    })
   }, [sessionId, dispatch])
 
   const handleSpecFeedback = useCallback(
@@ -83,6 +96,29 @@ export function ChatThread({ sendMessage }: { sendMessage: (data: Record<string,
           const prev = messages[i - 1]
           const gapClass =
             prev?.variant === entry.variant ? "mt-2" : "mt-4"
+
+          // Render phase dividers (synthetic messages from approval actions)
+          if (entry.type === "phase.divider") {
+            return (
+              <div key={entry.id} className={i === 0 ? "" : "mt-4"}>
+                <PhaseDivider label={(entry.payload as { label: string }).label} />
+              </div>
+            )
+          }
+
+          // Render question group messages
+          if (entry.type === "chat.question_group") {
+            return (
+              <div key={entry.id} className={i === 0 ? "" : "mt-4"}>
+                <QuestionGroupCard
+                  entry={entry}
+                  sendMessage={sendMessage}
+                  sessionId={sessionId}
+                  dispatch={dispatch}
+                />
+              </div>
+            )
+          }
 
           // Render checkpoint messages
           if (entry.type === "chat.checkpoint") {
@@ -126,7 +162,16 @@ export function ChatThread({ sendMessage }: { sendMessage: (data: Record<string,
           }
 
           if (entry.type === "status.complete") {
-            const p = entry.payload as { session_id: string; framework: string; summary: string }
+            const p = entry.payload as {
+              session_id: string
+              framework: string
+              summary: string
+              all_passed?: boolean
+              agents_count?: number
+              test_passed?: number
+              test_total?: number
+              file_count?: number
+            }
             return (
               <div key={entry.id} className={i === 0 ? "" : "mt-4"}>
                 <PhaseDivider label="Build Complete" />
@@ -134,6 +179,11 @@ export function ChatThread({ sendMessage }: { sendMessage: (data: Record<string,
                   sessionId={p.session_id}
                   framework={p.framework}
                   summary={p.summary}
+                  allPassed={p.all_passed}
+                  agentsCount={p.agents_count}
+                  testPassed={p.test_passed}
+                  testTotal={p.test_total}
+                  fileCount={p.file_count}
                 />
               </div>
             )

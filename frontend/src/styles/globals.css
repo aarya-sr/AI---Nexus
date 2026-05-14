@@ -25,30 +25,19 @@
   --section-pad: clamp(3rem, 8vh, 6rem);
 }
 
-*,
-*::before,
-*::after {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-}
-
-html {
-  font-size: 16px;
-  scroll-behavior: smooth;
-}
-
-body {
+/* Scope all landing page styles under .lab-landing */
+.lab-landing {
   background: var(--bg);
   color: var(--bone);
   font-family: var(--font-body);
   line-height: 1.6;
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
+  min-height: 100vh;
 }
 
 /* Parallax lab graph paper */
-body::before {
+.lab-landing::before {
   content: '';
   position: fixed;
   inset: 0;
@@ -60,7 +49,7 @@ body::before {
 }
 
 /* Vignette overlay at section boundaries */
-body::after {
+.lab-landing::after {
   content: '';
   position: fixed;
   inset: 0;
@@ -70,50 +59,39 @@ body::after {
 }
 
 /* Selection */
-::selection {
+.lab-landing ::selection {
   background: var(--formaldehyde-dim);
   color: var(--formaldehyde);
 }
 
 /* Scrollbar */
-::-webkit-scrollbar {
+.lab-landing ::-webkit-scrollbar {
   width: 6px;
 }
-::-webkit-scrollbar-track {
+.lab-landing ::-webkit-scrollbar-track {
   background: var(--bg);
 }
-::-webkit-scrollbar-thumb {
+.lab-landing ::-webkit-scrollbar-thumb {
   background: var(--copper-dim);
   border-radius: 3px;
 }
 
-/* Reduced motion */
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-  }
-}
-
 /* Section base */
-section {
+.lab-landing section {
   padding: var(--section-pad) clamp(1rem, 5vw, 4rem);
 }
 
 /* Links */
-a {
+.lab-landing a {
   color: var(--formaldehyde);
   text-decoration: none;
 }
-a:hover {
+.lab-landing a:hover {
   text-decoration: underline;
 }
 
 /* Utility */
-.lab-label {
+.lab-landing .lab-label {
   font-family: var(--font-mono);
   font-size: 0.7rem;
   letter-spacing: 0.15em;

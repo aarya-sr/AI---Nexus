@@ -1,4 +1,11 @@
-"""Elicitor agent — extracts structured requirements from natural language via Q&A loop."""
+"""Elicitor agent — extracts structured requirements from natural language via Q&A loop.
+
+Split into two nodes for LangGraph compatibility:
+  - elicitor_ask: generates questions and interrupts for human answer
+  - elicitor_process: processes the answer, re-scores, decides next step
+
+The graph routes between them: ask → process → ask (loop) or process → checkpoint.
+"""
 
 import json
 import logging
@@ -19,6 +26,8 @@ from app.services.llm_service import LLMService
 logger = logging.getLogger(__name__)
 
 CATEGORY_PRIORITY = ["Input/Output", "Process", "Data", "Edge Cases", "Quality Bar"]
+MIN_ELICITOR_ROUNDS = 2
+ELICITOR_COMPLETENESS_THRESHOLD = 0.85
 
 # ── System prompts ───────────────────────────────────────────────────
 
@@ -45,6 +54,11 @@ Scoring rules:
 - 0.7-0.99: Most fields addressed, minor ambiguities inferable from context
 - 0.4-0.69: Some fields addressed but significant gaps remain
 - 0.0-0.39: Category barely touched
+
+IMPORTANT: Do NOT score a category above 0.7 unless the user has explicitly provided \
+specific values for most fields in that category. Inferring from context alone should \
+cap the score at 0.65. A single vague answer covering multiple categories should not \
+push any category above 0.6.
 
 Domain insights (from past builds, may be empty): {domain_insights}
 
@@ -90,7 +104,7 @@ Respond ONLY with valid JSON:
     }}
   ]
 }}
-Only include categories that have gaps (confidence < 0.7)."""
+Only include categories that have gaps (confidence < 0.85)."""
 
 ANSWER_EXTRACT_SYSTEM = """\
 You are extracting structured requirement information from a user's conversational answer.
@@ -173,7 +187,194 @@ Respond ONLY with valid JSON matching this exact schema:
 }}"""
 
 
-# ── Agent implementation ─────────────────────────────────────────────
+# ── Node 1: Ask questions ────────────────────────────────────────────
+
+
+def elicitor_ask(
+    state: FrankensteinState,
+    *,
+    llm: LLMService | None = None,
+    chroma: ChromaService | None = None,
+) -> dict:
+    """Generate questions for the current round and interrupt for human answer."""
+    from app.services.chroma_service import ChromaService as _CS
+    from app.services.llm_service import LLMService as _LS
+
+    if llm is None:
+        llm = _LS()
+    if chroma is None:
+        chroma = _CS()
+
+    raw_prompt = state.get("raw_prompt", "")
+    max_rounds = settings.max_elicitor_rounds
+    current_round = state.get("elicitor_round", 0) + 1
+    all_answers: list[dict] = list(state.get("human_answers", []))
+    all_questions: list[dict] = list(state.get("elicitor_questions", []))
+
+    logger.info("Elicitor ask — round %d, prompt length: %d chars", current_round, len(raw_prompt))
+
+    # Query domain insights
+    domain_insights = _query_domain_insights(chroma, raw_prompt)
+
+    # Run gap analysis with all accumulated answers
+    gap_result = _run_gap_analysis(llm, raw_prompt, domain_insights, accumulated_answers=all_answers)
+    logger.info(
+        "Gap analysis — quality: %s, scores: %s",
+        gap_result.overall_quality,
+        {c.name: c.confidence for c in gap_result.categories},
+    )
+
+    gaps = gap_result.gaps(threshold=ELICITOR_COMPLETENESS_THRESHOLD)
+
+    # Determine min questions per category
+    is_low_quality = gap_result.overall_quality == "low" or len(raw_prompt.split()) <= 10
+    min_questions = 2 if is_low_quality else 1
+
+    # Collect previous questions to avoid repeats
+    previous_questions: list[str] = []
+    for q_payload in all_questions:
+        for cat in q_payload.get("categories", []):
+            previous_questions.extend(cat.get("questions", []))
+
+    # Generate questions
+    question_categories = _generate_questions(
+        llm,
+        raw_prompt,
+        gaps,
+        accumulated_answers=all_answers,
+        previous_questions=previous_questions,
+        current_round=current_round,
+        max_rounds=max_rounds,
+        min_questions=min_questions,
+    )
+
+    round_questions: list[str] = []
+    for qc in question_categories:
+        round_questions.extend(qc.questions)
+
+    question_payload = {
+        "categories": [qc.model_dump() for qc in question_categories],
+        "round": current_round,
+        "max_rounds": max_rounds,
+    }
+    all_questions.append(question_payload)
+
+    logger.info(
+        "Round %d — sending %d questions across %d categories",
+        current_round, len(round_questions), len(question_categories),
+    )
+
+    # Interrupt: pause for human answer
+    user_answer = interrupt(question_payload)
+
+    logger.info("Round %d — received answer (%d chars)", current_round, len(str(user_answer)))
+
+    # Process the answer
+    timestamp = datetime.now(timezone.utc).isoformat()
+    answer_record = {
+        "round": current_round,
+        "answers": user_answer,
+        "timestamp": timestamp,
+    }
+
+    # Extract structured fields
+    extracted = _extract_answer_fields(llm, round_questions, gaps, user_answer)
+    if extracted:
+        answer_record["extracted_fields"] = extracted
+
+    all_answers.append(answer_record)
+
+    # Re-score
+    gap_result_new = _run_gap_analysis(llm, raw_prompt, domain_insights, accumulated_answers=all_answers)
+    logger.info(
+        "Round %d complete — scores: %s",
+        current_round,
+        {c.name: c.confidence for c in gap_result_new.categories},
+    )
+
+    # Store gap result for routing decision
+    gap_scores = {c.name: c.confidence for c in gap_result_new.categories}
+    all_complete = gap_result_new.all_complete(threshold=ELICITOR_COMPLETENESS_THRESHOLD)
+
+    return {
+        "elicitor_questions": all_questions,
+        "human_answers": all_answers,
+        "elicitor_round": current_round,
+        "elicitor_gap_scores": gap_scores,
+        "elicitor_all_complete": all_complete,
+        "elicitor_domain_insights": domain_insights,
+    }
+
+
+# ── Node 2: Compile requirements ─────────────────────────────────────
+
+
+def elicitor_compile(
+    state: FrankensteinState,
+    *,
+    llm: LLMService | None = None,
+    chroma: ChromaService | None = None,
+) -> dict:
+    """Compile all gathered Q&A into a RequirementsDoc."""
+    from app.services.chroma_service import ChromaService as _CS
+    from app.services.llm_service import LLMService as _LS
+
+    if llm is None:
+        llm = _LS()
+    if chroma is None:
+        chroma = _CS()
+
+    raw_prompt = state.get("raw_prompt", "")
+    max_rounds = settings.max_elicitor_rounds
+    all_answers: list[dict] = list(state.get("human_answers", []))
+    all_complete = state.get("elicitor_all_complete", False)
+    domain_insights = state.get("elicitor_domain_insights", "")
+
+    logger.info("Elicitor compile — %d answer rounds, all_complete=%s", len(all_answers), all_complete)
+
+    # Generate assumptions if gaps remain
+    assumptions: list[str] = []
+    if not all_complete:
+        gap_result = _run_gap_analysis(llm, raw_prompt, domain_insights, accumulated_answers=all_answers)
+        remaining_fields = []
+        for cat in gap_result.gaps():
+            remaining_fields.extend(cat.missing_fields)
+        if remaining_fields:
+            assumptions = _generate_assumptions(llm, raw_prompt, all_answers, remaining_fields)
+            logger.info("Generated %d assumptions for remaining gaps", len(assumptions))
+
+    # Compile
+    requirements = _compile_requirements(
+        llm, raw_prompt, all_answers, assumptions, domain_insights, max_rounds
+    )
+    logger.info("Requirements compiled — domain: %s", requirements.domain)
+
+    return {
+        "requirements": requirements,
+        "requirements_approved": False,
+    }
+
+
+# ── Routing function ─────────────────────────────────────────────────
+
+
+def route_after_elicitor_ask(state: FrankensteinState) -> str:
+    """Decide: loop back for more questions or compile requirements."""
+    current_round = state.get("elicitor_round", 0)
+    max_rounds = settings.max_elicitor_rounds
+    all_complete = state.get("elicitor_all_complete", False)
+
+    needs_more = current_round < MIN_ELICITOR_ROUNDS or not all_complete
+
+    if needs_more and current_round < max_rounds:
+        logger.info("Routing: elicitor_ask → elicitor_ask (round %d, needs_more=%s)", current_round, needs_more)
+        return "elicitor_ask"
+
+    logger.info("Routing: elicitor_ask → elicitor_compile (round %d, all_complete=%s)", current_round, all_complete)
+    return "elicitor_compile"
+
+
+# ── Legacy single-node wrapper (kept for test compatibility) ──────────
 
 
 def elicitor_agent(
@@ -182,9 +383,9 @@ def elicitor_agent(
     llm: LLMService | None = None,
     chroma: ChromaService | None = None,
 ) -> dict:
-    """Elicitor node — extracts requirements via structured Q&A loop.
+    """Legacy single-node elicitor. Calls ask in a loop then compiles.
 
-    Uses LangGraph interrupt() to pause for human answers at each round.
+    Only used by tests — the graph uses elicitor_ask + elicitor_compile.
     """
     from app.services.chroma_service import ChromaService as _CS
     from app.services.llm_service import LLMService as _LS
@@ -196,46 +397,25 @@ def elicitor_agent(
 
     raw_prompt = state.get("raw_prompt", "")
     max_rounds = settings.max_elicitor_rounds
-    threshold = settings.completeness_threshold
 
-    logger.info("Elicitor starting — prompt length: %d chars", len(raw_prompt))
-
-    # ── Step 1: Query domain insights ────────────────────────────────
     domain_insights = _query_domain_insights(chroma, raw_prompt)
-
-    # ── Step 2: Initial gap analysis ─────────────────────────────────
-    gap_result = _run_gap_analysis(
-        llm, raw_prompt, domain_insights, accumulated_answers=[]
-    )
-    logger.info(
-        "Initial gap analysis — quality: %s, gaps: %s",
-        gap_result.overall_quality,
-        [c.name for c in gap_result.gaps()],
-    )
+    gap_result = _run_gap_analysis(llm, raw_prompt, domain_insights, accumulated_answers=[])
 
     all_questions: list[dict] = state.get("elicitor_questions", [])
     all_answers: list[dict] = state.get("human_answers", [])
     previous_questions: list[str] = []
     assumptions: list[str] = []
 
-    # ── Step 3: Q&A loop ─────────────────────────────────────────────
     current_round = 0
-    while not gap_result.all_complete() and current_round < max_rounds:
+    while current_round < max_rounds and (current_round < MIN_ELICITOR_ROUNDS or not gap_result.all_complete(threshold=ELICITOR_COMPLETENESS_THRESHOLD)):
         current_round += 1
-        gaps = gap_result.gaps()
+        gaps = gap_result.gaps(threshold=ELICITOR_COMPLETENESS_THRESHOLD)
 
-        # Determine min questions per category
-        is_low_quality = (
-            gap_result.overall_quality == "low"
-            or len(raw_prompt.split()) <= 10
-        )
+        is_low_quality = gap_result.overall_quality == "low" or len(raw_prompt.split()) <= 10
         min_questions = 2 if is_low_quality else 1
 
-        # Generate questions
         question_categories = _generate_questions(
-            llm,
-            raw_prompt,
-            gaps,
+            llm, raw_prompt, gaps,
             accumulated_answers=all_answers,
             previous_questions=previous_questions,
             current_round=current_round,
@@ -243,7 +423,6 @@ def elicitor_agent(
             min_questions=min_questions,
         )
 
-        # Track questions
         round_questions: list[str] = []
         for qc in question_categories:
             round_questions.extend(qc.questions)
@@ -256,54 +435,26 @@ def elicitor_agent(
         }
         all_questions.append(question_payload)
 
-        logger.info(
-            "Round %d — sending %d questions across %d categories",
-            current_round,
-            len(round_questions),
-            len(question_categories),
-        )
-
-        # ── Interrupt: pause for human answer ────────────────────────
         user_answer = interrupt(question_payload)
 
-        # Process answer
         timestamp = datetime.now(timezone.utc).isoformat()
-        answer_record = {
-            "round": current_round,
-            "answers": user_answer,
-            "timestamp": timestamp,
-        }
+        answer_record = {"round": current_round, "answers": user_answer, "timestamp": timestamp}
         all_answers.append(answer_record)
 
-        # Extract structured fields from free-text answer
-        _extract_answer_fields(llm, round_questions, gaps, user_answer)
+        extracted = _extract_answer_fields(llm, round_questions, gaps, user_answer)
+        if extracted:
+            answer_record["extracted_fields"] = extracted
 
-        # Re-score
-        gap_result = _run_gap_analysis(
-            llm, raw_prompt, domain_insights, accumulated_answers=all_answers
-        )
-        logger.info(
-            "Round %d complete — scores: %s",
-            current_round,
-            {c.name: c.confidence for c in gap_result.categories},
-        )
+        gap_result = _run_gap_analysis(llm, raw_prompt, domain_insights, accumulated_answers=all_answers)
 
-    # ── Step 4: Flag assumptions if gaps remain ──────────────────────
     if not gap_result.all_complete():
         remaining_fields = []
         for cat in gap_result.gaps():
             remaining_fields.extend(cat.missing_fields)
         if remaining_fields:
-            assumptions = _generate_assumptions(
-                llm, raw_prompt, all_answers, remaining_fields
-            )
-            logger.info("Generated %d assumptions for remaining gaps", len(assumptions))
+            assumptions = _generate_assumptions(llm, raw_prompt, all_answers, remaining_fields)
 
-    # ── Step 5: Compile RequirementsDoc ──────────────────────────────
-    requirements = _compile_requirements(
-        llm, raw_prompt, all_answers, assumptions, domain_insights, max_rounds
-    )
-    logger.info("Requirements compiled — domain: %s", requirements.domain)
+    requirements = _compile_requirements(llm, raw_prompt, all_answers, assumptions, domain_insights, max_rounds)
 
     return {
         "elicitor_questions": all_questions,
@@ -339,9 +490,13 @@ def _run_gap_analysis(
     system = GAP_ANALYSIS_SYSTEM.format(domain_insights=domain_insights)
 
     if accumulated_answers:
-        answers_text = "\n".join(
-            f"Round {a['round']}: {a['answers']}" for a in accumulated_answers
-        )
+        answer_parts = []
+        for a in accumulated_answers:
+            part = f"Round {a['round']}: {a['answers']}"
+            if a.get("extracted_fields"):
+                part += f"\n  Extracted fields: {json.dumps(a['extracted_fields'])}"
+            answer_parts.append(part)
+        answers_text = "\n".join(answer_parts)
         user_msg = (
             f"Re-analyze the updated description for completeness.\n\n"
             f'Original prompt: "{raw_prompt}"\n\n'
@@ -357,7 +512,11 @@ def _run_gap_analysis(
         user_prompt=user_msg,
         json_mode=True,
     )
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error("Gap analysis returned invalid JSON: %s", e)
+        raise ValueError(f"LLM returned invalid JSON for gap analysis: {e}") from e
     return GapAnalysisResult(**data)
 
 
@@ -404,10 +563,13 @@ def _generate_questions(
         user_prompt=user_msg,
         json_mode=True,
     )
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error("Question generation returned invalid JSON: %s", e)
+        raise ValueError(f"LLM returned invalid JSON for question generation: {e}") from e
     categories = [QuestionCategory(**c) for c in data.get("categories", [])]
 
-    # Enforce min questions per category
     for cat in categories:
         if len(cat.questions) < min_questions:
             logger.warning(
@@ -415,7 +577,6 @@ def _generate_questions(
                 cat.name, len(cat.questions), min_questions,
             )
 
-    # Sort by priority order
     categories.sort(key=lambda c: CATEGORY_PRIORITY.index(c.name) if c.name in CATEGORY_PRIORITY else 99)
     return categories
 
@@ -443,7 +604,11 @@ def _extract_answer_fields(
         user_prompt=user_msg,
         json_mode=True,
     )
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error("Answer extraction returned invalid JSON: %s", e)
+        return {}
     return data.get("extracted_fields", {})
 
 
@@ -472,7 +637,11 @@ def _generate_assumptions(
         user_prompt=user_msg,
         json_mode=True,
     )
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error("Assumption generation returned invalid JSON: %s", e)
+        return []
     return data.get("assumptions", [])
 
 
@@ -508,5 +677,9 @@ def _compile_requirements(
         user_prompt=user_msg,
         json_mode=True,
     )
-    data = json.loads(raw)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        logger.error("Requirements compilation returned invalid JSON: %s", e)
+        raise ValueError(f"LLM returned invalid JSON for requirements compilation: {e}") from e
     return RequirementsDoc(**data)

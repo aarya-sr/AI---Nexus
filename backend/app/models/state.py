@@ -17,6 +17,10 @@ class FrankensteinState(TypedDict, total=False):
     raw_prompt: str
     elicitor_questions: list[dict]
     human_answers: list[dict]
+    elicitor_round: int
+    elicitor_gap_scores: dict
+    elicitor_all_complete: bool
+    elicitor_domain_insights: str
     requirements: RequirementsDoc
     requirements_approved: bool
 

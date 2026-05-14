@@ -44,24 +44,24 @@ class SessionService:
             return session_id in _registry
 
     def set_chat_ws(self, session_id: str, ws: Any) -> None:
-        if session_id in _registry:
-            _registry[session_id]["chat_ws"] = ws
+        with _lock:
+            if session_id in _registry:
+                _registry[session_id]["chat_ws"] = ws
 
     def clear_chat_ws(self, session_id: str) -> None:
-        if session_id in _registry:
-            _registry[session_id]["chat_ws"] = None
+        with _lock:
+            if session_id in _registry:
+                _registry[session_id]["chat_ws"] = None
 
     def set_status_ws(self, session_id: str, ws: Any) -> None:
-        if session_id in _registry:
-            _registry[session_id]["status_ws"] = ws
+        with _lock:
+            if session_id in _registry:
+                _registry[session_id]["status_ws"] = ws
 
     def clear_status_ws(self, session_id: str) -> None:
-        if session_id in _registry:
-            _registry[session_id]["status_ws"] = None
-
-    def update_stage(self, session_id: str, stage: str) -> None:
-        if session_id in _registry:
-            _registry[session_id]["stage"] = stage
+        with _lock:
+            if session_id in _registry:
+                _registry[session_id]["status_ws"] = None
 
     def get_session_dir(self, session_id: str) -> Path:
         return self._base_dir / session_id
@@ -81,7 +81,8 @@ class SessionService:
                 mtime = entry.stat().st_mtime
                 if mtime < cutoff:
                     shutil.rmtree(entry)
-                    _registry.pop(entry.name, None)
+                    with _lock:
+                        _registry.pop(entry.name, None)
                     deleted += 1
                     logger.info("Cleaned up old session dir: %s", entry.name)
             except OSError as e:

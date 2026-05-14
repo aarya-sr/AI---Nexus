@@ -1,9 +1,14 @@
+import { SystemAvatar } from "./ChatMessage"
+
 export function TypingIndicator() {
   return (
-    <div className="bg-surface rounded-xl px-5 py-4">
-      <span className="text-[15px] text-text-secondary animate-[pulse_1.5s_ease-in-out_infinite]">
-        Frankenstein is thinking...
-      </span>
+    <div className="flex items-start gap-3 animate-[fadeUp_200ms_ease-out]">
+      <SystemAvatar />
+      <div className="bg-surface rounded-2xl rounded-bl-md px-4 py-3 flex items-center gap-1.5">
+        <span className="w-1.5 h-1.5 rounded-full bg-text-tertiary animate-[bounce_1.2s_ease-in-out_infinite]" />
+        <span className="w-1.5 h-1.5 rounded-full bg-text-tertiary animate-[bounce_1.2s_ease-in-out_0.2s_infinite]" />
+        <span className="w-1.5 h-1.5 rounded-full bg-text-tertiary animate-[bounce_1.2s_ease-in-out_0.4s_infinite]" />
+      </div>
     </div>
   )
 }
