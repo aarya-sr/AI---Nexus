@@ -9,6 +9,7 @@ class SpecMetadata(BaseModel):
     name: str
     domain: str
     framework_target: Literal["crewai", "langgraph"]
+    decision_rationale: str | None = None
     created_from_pattern: str | None = None
 
 

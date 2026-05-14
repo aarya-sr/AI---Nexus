@@ -26,7 +26,7 @@ export type Action =
   | { type: "CHAT_MESSAGE"; payload: ChatEntry }
   | { type: "STAGE_UPDATE"; payload: { stage: string; description: string } }
   | { type: "PROGRESS"; payload: { stage: string; percent: number; detail: string } }
-  | { type: "COMPLETE"; payload: Record<string, unknown> }
+  | { type: "COMPLETE"; payload: { session_id: string; framework: string; download_url: string; summary: string } }
   | { type: "ERROR"; payload: { stage: string; message: string; recoverable: boolean } }
   | { type: "SET_CONNECTED"; payload: boolean }
   | { type: "SET_WORKING"; payload: boolean }
@@ -59,7 +59,7 @@ export function pipelineReducer(state: PipelineState, action: Action): PipelineS
         messages: [
           ...state.messages,
           {
-            id: `complete-${Date.now()}`,
+            id: `complete-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             variant: "system",
             type: "status.complete",
             payload: action.payload,
@@ -79,7 +79,7 @@ export function pipelineReducer(state: PipelineState, action: Action): PipelineS
         messages: [
           ...state.messages,
           {
-            id: `error-${Date.now()}`,
+            id: `error-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             variant: "system",
             type: "error",
             payload: action.payload,

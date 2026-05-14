@@ -1,5 +1,6 @@
 import logging
 import shutil
+import threading
 import time
 import uuid
 from datetime import datetime
@@ -11,6 +12,7 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 _registry: dict[str, dict[str, Any]] = {}
+_lock = threading.Lock()
 
 
 class SessionService:
@@ -22,21 +24,24 @@ class SessionService:
         session_dir = self._base_dir / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
 
-        _registry[session_id] = {
-            "session_id": session_id,
-            "created_at": datetime.utcnow(),
-            "stage": "idle",
-            "chat_ws": None,
-            "status_ws": None,
-        }
+        with _lock:
+            _registry[session_id] = {
+                "session_id": session_id,
+                "created_at": datetime.utcnow(),
+                "stage": "idle",
+                "chat_ws": None,
+                "status_ws": None,
+            }
         logger.info("Session created: %s", session_id)
         return session_id
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
-        return _registry.get(session_id)
+        with _lock:
+            return _registry.get(session_id)
 
     def session_exists(self, session_id: str) -> bool:
-        return session_id in _registry
+        with _lock:
+            return session_id in _registry
 
     def set_chat_ws(self, session_id: str, ws: Any) -> None:
         if session_id in _registry:

@@ -9,8 +9,10 @@ export interface PipelineStage {
 
 export const PIPELINE_STAGES: PipelineStage[] = [
   { id: "elicitor", name: "Understanding", description: "Understanding your needs", status: "pending" },
+  { id: "requirements_review", name: "Requirements Review", description: "Reviewing requirements with you", status: "pending" },
   { id: "architect", name: "Designing", description: "Designing your agent architecture", status: "pending" },
   { id: "critic", name: "Reviewing", description: "Reviewing the blueprint", status: "pending" },
+  { id: "spec_review", name: "Spec Review", description: "Reviewing spec with you", status: "pending" },
   { id: "builder", name: "Building", description: "Building your agents", status: "pending" },
   { id: "tester", name: "Testing", description: "Testing the agents", status: "pending" },
   { id: "learner", name: "Learning", description: "Storing learnings", status: "pending" },

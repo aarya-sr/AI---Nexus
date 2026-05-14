@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     # Server
     backend_host: str = "0.0.0.0"
     backend_port: int = 8000
+    cors_origins: str = "http://localhost:5173"
 
     # Storage
     chroma_persist_dir: str = "./chroma_data"

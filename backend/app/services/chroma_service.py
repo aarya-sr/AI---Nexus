@@ -1,9 +1,12 @@
 import json
+import logging
 from pathlib import Path
 
 import chromadb
 
 from app.models.tools import ToolSchema
+
+logger = logging.getLogger(__name__)
 
 COLLECTIONS = ["tool_schemas", "spec_patterns", "anti_patterns", "domain_insights"]
 
@@ -16,6 +19,10 @@ class ChromaService:
             self._collections[name] = self.client.get_or_create_collection(name)
 
     def collection(self, name: str) -> chromadb.Collection:
+        if name not in self._collections:
+            raise KeyError(
+                f"Unknown collection '{name}'. Valid: {list(self._collections.keys())}"
+            )
         return self._collections[name]
 
     # ── Tool Schema Library ──────────────────────────────────────────
@@ -27,8 +34,12 @@ class ChromaService:
         col = self.collection("tool_schemas")
         count = 0
         for path in sorted(tool_dir.glob("*.json")):
-            data = json.loads(path.read_text())
-            tool = ToolSchema(**data)
+            try:
+                data = json.loads(path.read_text())
+                tool = ToolSchema(**data)
+            except (json.JSONDecodeError, Exception) as e:
+                logger.warning("Skipping invalid tool file %s: %s", path.name, e)
+                continue
             # Embed on description + category + capabilities
             embed_text = f"{tool.name}: {tool.description}. Category: {tool.category}. Accepts: {', '.join(tool.accepts)}. Outputs: {', '.join(tool.outputs)}."
             col.upsert(

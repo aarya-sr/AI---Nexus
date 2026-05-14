@@ -83,12 +83,17 @@ def test_ws_status_unknown_session():
                 ws.receive_json()
 
 
-def test_ws_chat_stub_response():
+def test_ws_chat_pipeline_starts():
+    """When user sends control.user_input, the pipeline starts (may fail without API key, but no stub error)."""
+    import time
     with TestClient(app) as client:
         sid = client.post("/sessions").json()["session_id"]
         with client.websocket_connect(f"/ws/chat/{sid}") as ws:
             ws.receive_json()  # welcome
-            ws.send_json({"type": "control.user_input", "payload": {"text": "test"}})
-            resp = ws.receive_json()
-            assert resp["type"] == "error.pipeline_failure"
-            assert "not yet connected" in resp["payload"]["message"].lower() or "not yet" in resp["payload"]["message"].lower()
+            ws.send_json({"type": "control.user_input", "payload": {"text": "build me an agent"}})
+            time.sleep(2)  # allow async pipeline task to send a message
+            data = ws.receive_json()
+            # Should be either a pipeline error (no API key) or checkpoint, not the stub
+            assert data["type"] in ("error.pipeline_failure", "chat.checkpoint")
+            if data["type"] == "error.pipeline_failure":
+                assert "not yet connected" not in data["payload"]["message"].lower()

@@ -89,6 +89,7 @@ Return ONE JSON object matching this exact schema (no extra keys):
     "name": "descriptive_pipeline_name",
     "domain": "matches requirements.domain",
     "framework_target": "crewai" or "langgraph",
+    "decision_rationale": "2-4 sentences: why this framework, why these tools, why this agent grouping",
     "created_from_pattern": null
   },
   "agents": [
@@ -250,6 +251,7 @@ def _generate(
     )
 
     spec = _parse_spec(response)
+    reasoning = spec.metadata.decision_rationale or ""
     logger.info(
         "Architect: generated '%s' — %d agents, framework=%s",
         spec.metadata.name,
@@ -259,6 +261,7 @@ def _generate(
 
     return {
         "spec": spec,
+        "architect_reasoning": reasoning,
         "tool_library_matches": all_tools,
         "past_spec_matches": past_specs,
         "spec_iteration": state.get("spec_iteration", 0) + 1,
@@ -297,10 +300,12 @@ def _revise(state: FrankensteinState, llm: LLMService) -> dict:
     )
 
     revised = _parse_spec(response)
+    reasoning = revised.metadata.decision_rationale or ""
     logger.info("Architect: revision complete — '%s'", revised.metadata.name)
 
     return {
         "spec": revised,
+        "architect_reasoning": reasoning,
         "spec_iteration": state.get("spec_iteration", 0) + 1,
     }
 

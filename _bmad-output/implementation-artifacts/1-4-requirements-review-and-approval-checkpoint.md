@@ -1,6 +1,6 @@
 # Story 1.4: Requirements Review & Approval Checkpoint
 
-## Status: backlog
+## Status: review
 
 ## Story
 

@@ -98,11 +98,25 @@ class TestSeedTools:
         count = svc.seed_tools(tmp_path)
         assert count == 0
 
+    def test_seed_skips_malformed_json(self, svc, tmp_path):
+        (tmp_path / "good.json").write_text(json.dumps(SAMPLE_TOOL))
+        (tmp_path / "bad.json").write_text("{invalid json}")
+        count = svc.seed_tools(tmp_path)
+        assert count == 1
+        assert svc.stats()["tool_schemas"] == 1
+
 
 # ── Tool RAG Queries ──────────────────────────────────────────────
 
 
 class TestFindTools:
+    def test_empty_collection_returns_empty(self, svc):
+        results = svc.find_tools_for_capability("anything")
+        assert results == []
+
+    def test_get_tool_by_id_empty_collection(self, svc):
+        assert svc.get_tool_by_id("ghost") is None
+
     def test_finds_relevant_tool(self, svc, tool_dir):
         svc.seed_tools(tool_dir)
         results = svc.find_tools_for_capability("process alpha data")

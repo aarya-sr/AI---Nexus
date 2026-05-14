@@ -2,12 +2,13 @@ import { useEffect, useRef, useCallback } from "react"
 import { usePipelineDispatch } from "../context/PipelineContext"
 import type { ServerMessage } from "../types/messages"
 
-const WS_BASE = `ws://${window.location.hostname}:8000`
+const WS_BASE = `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`
 
 export function useWebSocket(sessionId: string | null) {
   const dispatch = usePipelineDispatch()
   const chatWsRef = useRef<WebSocket | null>(null)
   const statusWsRef = useRef<WebSocket | null>(null)
+  const pendingRef = useRef<Record<string, unknown>[]>([])
 
   useEffect(() => {
     if (!sessionId) return
@@ -17,7 +18,14 @@ export function useWebSocket(sessionId: string | null) {
     chatWsRef.current = chatWs
     statusWsRef.current = statusWs
 
-    chatWs.onopen = () => dispatch({ type: "SET_CONNECTED", payload: true })
+    chatWs.onopen = () => {
+      dispatch({ type: "SET_CONNECTED", payload: true })
+      // Flush any messages queued before connection opened
+      for (const msg of pendingRef.current) {
+        chatWs.send(JSON.stringify(msg))
+      }
+      pendingRef.current = []
+    }
     chatWs.onclose = () => dispatch({ type: "SET_CONNECTED", payload: false })
 
     chatWs.onmessage = (event) => {
@@ -49,7 +57,7 @@ export function useWebSocket(sessionId: string | null) {
           dispatch({
             type: "CHAT_MESSAGE",
             payload: {
-              id: `qg-${Date.now()}`,
+              id: `qg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
               variant: "system",
               type: msg.type,
               payload: msg.payload,
@@ -62,7 +70,7 @@ export function useWebSocket(sessionId: string | null) {
           dispatch({
             type: "CHAT_MESSAGE",
             payload: {
-              id: `cp-${Date.now()}`,
+              id: `cp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
               variant: "system",
               type: msg.type,
               payload: msg.payload,
@@ -112,6 +120,9 @@ export function useWebSocket(sessionId: string | null) {
     (data: Record<string, unknown>) => {
       if (chatWsRef.current?.readyState === WebSocket.OPEN) {
         chatWsRef.current.send(JSON.stringify(data))
+      } else {
+        // Queue message — will flush when onopen fires
+        pendingRef.current.push(data)
       }
     },
     []

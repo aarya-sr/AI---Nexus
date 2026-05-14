@@ -13,8 +13,9 @@ export interface ChatMessage extends BaseMessage {
 export interface QuestionGroupMessage extends BaseMessage {
   type: "chat.question_group"
   payload: {
+    categories: { name: string; confidence: number; questions: string[] }[]
     round: number
-    questions: { id: string; category: string; text: string }[]
+    max_rounds: number
   }
 }
 

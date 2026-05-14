@@ -24,6 +24,7 @@ class FrankensteinState(TypedDict, total=False):
     tool_library_matches: list[ToolSchema]
     past_spec_matches: list[dict]
     spec: AgentSpec
+    architect_reasoning: str
     critique: CritiqueReport
     spec_iteration: int
     spec_approved: bool

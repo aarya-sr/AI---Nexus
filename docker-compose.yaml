@@ -1,0 +1,32 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - CHROMA_PERSIST_DIR=/data/chroma
+      - GENERATED_AGENTS_DIR=/data/generated_agents
+    volumes:
+      - chroma_data:/data/chroma
+      - generated_agents:/data/generated_agents
+    depends_on:
+      - chroma
+
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - "8001:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+
+  runner:
+    build: ./runner
+    profiles:
+      - runner
+    volumes:
+      - generated_agents:/agent
+
+volumes:
+  chroma_data:
+  generated_agents:

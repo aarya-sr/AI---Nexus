@@ -40,8 +40,16 @@ function ChatLayout() {
 
   const handleFirstPrompt = useCallback(
     async (text: string) => {
-      const res = await fetch("http://localhost:8000/sessions", { method: "POST" })
-      const { session_id } = await res.json()
+      let session_id: string
+      try {
+        const res = await fetch("/api/sessions", { method: "POST" })
+        if (!res.ok) throw new Error(`Server error: ${res.status}`)
+        const body = await res.json()
+        session_id = body.session_id
+      } catch (err) {
+        console.error("Failed to create session:", err)
+        return
+      }
       dispatch({ type: "SET_SESSION", payload: session_id })
       dispatch({ type: "SET_STARTED" })
       dispatch({ type: "SET_WORKING", payload: true })
@@ -57,15 +65,12 @@ function ChatLayout() {
         },
       })
 
-      // WS connects via useWebSocket effect when sessionId changes.
-      // Send prompt once connected via a small delay.
-      setTimeout(() => {
-        sendMessage({
-          type: "control.user_input",
-          payload: { text },
-          session_id,
-        })
-      }, 500)
+      // sendMessage queues if WS not yet open; flushes on connect
+      sendMessage({
+        type: "control.user_input",
+        payload: { text },
+        session_id,
+      })
     },
     [dispatch, sendMessage]
   )
